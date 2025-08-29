@@ -140,11 +140,27 @@ class BSVAddressTracker {
       health.components.rpc = await this.rpc.ping();
 
       // ZMQ health
-      try {
-        health.components.zmq = this.zmqListener ? this.zmqListener.isHealthy() : false;
-      } catch (error) {
-        health.components.zmq = false;
-        this.logger.warn('ZMQ health check failed', { error: error.message });
+      if (this.zmqListener) {
+        try {
+          const zmqHealthy = this.zmqListener.isHealthy();
+          health.components.zmq = {
+            healthy: zmqHealthy,
+            isRunning: this.zmqListener.isRunning,
+            hasRawTxSocket: !!this.zmqListener.rawTxSocket,
+            hasHashBlockSocket: !!this.zmqListener.hashBlockSocket
+          };
+        } catch (error) {
+          health.components.zmq = {
+            healthy: false,
+            error: error.message
+          };
+          this.logger.warn('ZMQ health check failed', { error: error.message });
+        }
+      } else {
+        health.components.zmq = {
+          healthy: false,
+          error: 'ZMQ listener not initialized'
+        };
       }
 
 

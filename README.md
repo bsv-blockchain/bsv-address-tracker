@@ -36,6 +36,30 @@ The system demonstrates a complete transaction lifecycle tracking pipeline:
   - ZeroMQ enabled (rawtx and hashblock topics)
   - Transaction index enabled (`txindex=1`)
 
+### SV Node Configuration
+
+Your `bitcoin.conf` must include these ZMQ settings:
+
+```conf
+# Required for transaction index lookups
+txindex=1
+
+# ZeroMQ configuration for real-time feeds
+zmqpubrawtx=tcp://127.0.0.1:28332
+zmqpubhashblock=tcp://127.0.0.1:28333
+
+# Alternative ZMQ format (use one or the other)
+# zmqpubrawtx2=tcp://127.0.0.1:28332
+# zmqpubhashblock2=tcp://127.0.0.1:28333
+
+# RPC configuration
+rpcallowip=127.0.0.1
+rpcuser=your_rpc_user
+rpcpassword=your_rpc_password
+```
+
+For detailed ZMQ configuration options, see the [Bitcoin SV Node ZMQ Documentation](https://bitcoinsv.io/2020/04/03/zmq-bitcoin-pubsub/).
+
 ## Installation
 
 1. Clone the repository:
@@ -267,9 +291,11 @@ The system logs all important events. Monitor the logs for:
 - Ensure RPC credentials are correct
 
 ### ZeroMQ Not Receiving Messages
-- Verify ZMQ is enabled in bitcoin.conf
-- Check ZMQ endpoints are correct
-- Ensure no firewall blocking ZMQ ports
+- Verify ZMQ is enabled in bitcoin.conf with `zmqpubrawtx` and `zmqpubhashblock` settings
+- Check ZMQ endpoints are correct in your .env file
+- Ensure no firewall blocking ZMQ ports (default: 28332, 28333)
+- Test ZMQ connection: `telnet 127.0.0.1 28332` should connect
+- Restart your SV node after adding ZMQ configuration
 
 ### High Memory Usage
 - Adjust `CONFIRMATION_BATCH_SIZE` for smaller batches

@@ -239,7 +239,7 @@ class ZMQListener {
 
   // Health check
   isHealthy() {
-    return this.isRunning && this.rawTxSocket && this.hashBlockSocket;
+    return !!(this.isRunning && this.rawTxSocket && this.hashBlockSocket);
   }
 
   // Get listener stats
