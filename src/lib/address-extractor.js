@@ -21,6 +21,20 @@ class AddressExtractor {
    */
   extractAddressesFromTx(txHex, network = 'testnet') {
     try {
+      // Check transaction size limit (hex string length / 2 = bytes)
+      const txSizeBytes = txHex.length / 2;
+      const maxTxSizeBytes = parseInt(process.env.MAX_TX_SIZE_BYTES) || 4194304; // 4MB default
+
+      this.logger.debug('Processing transaction size check', {
+        txSizeBytes,
+        maxTxSizeBytes,
+        txHex: txHex.substring(0, 64) + '...'
+      });
+
+      if (txSizeBytes > maxTxSizeBytes) {
+        throw new Error(`Transaction size ${txSizeBytes} bytes exceeds maximum ${maxTxSizeBytes} bytes`);
+      }
+
       const tx = Transaction.fromHex(txHex);
 
       const inputAddresses = this.extractInputAddresses(tx, network);
@@ -30,9 +44,8 @@ class AddressExtractor {
 
       this.logger.debug('Address extraction successful', {
         txid: tx.id('hex'),
-        inputAddresses: inputAddresses.length,
-        outputAddresses: outputAddresses.length,
-        totalAddresses: allAddresses.length
+        txSizeBytes,
+        allAddresses
       });
 
       return {

@@ -93,8 +93,7 @@ class MongoDB {
         // _id is the transaction ID (natural index)
         { key: { addresses: 1 }, name: 'addresses_1' },
         { key: { archived_at: -1 }, name: 'archived_at_desc' },
-        { key: { block_height: 1 }, name: 'block_height_1' },
-        { key: { confirmed_at: 1 }, name: 'confirmed_at_1' }
+        { key: { block_height: 1 }, name: 'block_height_1' }
       ]);
 
       this.logger.info('Created database indexes successfully');

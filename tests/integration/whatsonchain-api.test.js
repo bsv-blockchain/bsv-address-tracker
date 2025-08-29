@@ -28,22 +28,7 @@ describe('WhatsOnChain API Integration', () => {
     }
   });
 
-  describe('API connectivity', () => {
-    test('should ping WhatsOnChain API successfully', async () => {
-      const isHealthy = await client.ping();
-      expect(isHealthy).toBe(true);
-    }, 10000);
-
-    test('should get chain info', async () => {
-      const chainInfo = await client.getChainInfo();
-      
-      expect(chainInfo).toBeDefined();
-      expect(chainInfo).toHaveProperty('chain');
-      expect(chainInfo).toHaveProperty('blocks');
-      expect(chainInfo).toHaveProperty('bestblockhash');
-      expect(chainInfo.chain).toBe('test'); // Should be testnet
-    }, 10000);
-  });
+  // Removed ping and chain info tests since those methods are no longer needed
 
   describe('address confirmed history', () => {
     test('should fetch confirmed history for test address', async () => {

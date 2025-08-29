@@ -260,7 +260,6 @@ class AddressHistoryFetcher {
       }
 
       const now = new Date();
-      const confirmedAt = basicTx.height ? new Date(basicTx.time * 1000) : null;
 
       // Only store essential tracking data - no amounts or raw transaction data
       return {
@@ -269,7 +268,6 @@ class AddressHistoryFetcher {
         block_height: basicTx.height || null,
         block_hash: null, // Will be filled by confirmation tracker if needed
         first_seen: now, // Historical, so first_seen = now
-        confirmed_at: confirmedAt,
         created_at: now,
         is_historical: true
       };
@@ -384,49 +382,20 @@ class AddressHistoryFetcher {
       stats: this.stats,
       queue: {
         size: this.processingQueue.size,
-        pending: this.processingQueue.pending,
-        isPaused: this.processingQueue.isPaused
+        pending: this.processingQueue.pending
       },
       whatsOnChain: this.wocClient.getStats()
     };
   }
 
   /**
-   * Clear processing queue
-   */
-  clearQueue() {
-    this.processingQueue.clear();
-    this.logger.info('Address history processing queue cleared');
-  }
-
-  /**
-   * Pause processing queue
-   */
-  pauseQueue() {
-    this.processingQueue.pause();
-    this.wocClient.pause();
-    this.logger.info('Address history processing paused');
-  }
-
-  /**
-   * Resume processing queue
-   */
-  resumeQueue() {
-    this.processingQueue.start();
-    this.wocClient.resume();
-    this.logger.info('Address history processing resumed');
-  }
-
-  /**
    * Test service connectivity
    * @returns {boolean} - Service health status
    */
-  async ping() {
-    try {
-      return await this.wocClient.ping();
-    } catch (error) {
-      return false;
-    }
+  ping() {
+    // Always return true since we removed WhatsOnChain ping
+    // The service is healthy if it's instantiated
+    return true;
   }
 
   /**

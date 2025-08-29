@@ -140,7 +140,12 @@ class BSVAddressTracker {
       health.components.rpc = await this.rpc.ping();
 
       // ZMQ health
-      health.components.zmq = this.zmqListener.isHealthy();
+      try {
+        health.components.zmq = this.zmqListener ? this.zmqListener.isHealthy() : false;
+      } catch (error) {
+        health.components.zmq = false;
+        this.logger.warn('ZMQ health check failed', { error: error.message });
+      }
 
 
       // Transaction tracker health

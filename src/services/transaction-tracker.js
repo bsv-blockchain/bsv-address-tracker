@@ -222,7 +222,6 @@ class TransactionTracker {
         block_hash: null,
         confirmations: 0,
         first_seen: now,
-        confirmed_at: null,
         status: 'pending',
         created_at: now
       };

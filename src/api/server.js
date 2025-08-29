@@ -34,7 +34,7 @@ class APIServer {
     // Add addresses to monitor
     this.fastify.post('/addresses', async (request, reply) => {
       try {
-        const { addresses } = request.body;
+        const { addresses, force } = request.body;
 
         if (!addresses || !Array.isArray(addresses) || addresses.length === 0) {
           return reply.code(400).send({
@@ -65,13 +65,29 @@ class APIServer {
         // Add addresses to database
         const results = [];
         const alreadyExist = [];
+        const forcedRefetch = [];
 
         for (const address of validAddresses) {
           try {
             const existing = await this.db.trackedAddresses.findOne({ _id: address });
 
             if (existing) {
-              alreadyExist.push(address);
+              if (force) {
+                // Reset historical fetch flags to force re-fetching
+                await this.db.trackedAddresses.updateOne(
+                  { _id: address },
+                  {
+                    $set: {
+                      historical_fetched: false,
+                      historical_fetched_at: null
+                    }
+                  }
+                );
+                forcedRefetch.push(address);
+                this.logger.info('Forcing historical data refetch for existing address', { address });
+              } else {
+                alreadyExist.push(address);
+              }
             } else {
               await this.db.trackedAddresses.insertOne({
                 _id: address,
@@ -97,28 +113,33 @@ class APIServer {
           await this.transactionTracker.rebuildBloomFilter();
         }
 
-        // Fetch historical data for new addresses
-        if (results.length > 0 && this.addressHistoryFetcher) {
-          this.addressHistoryFetcher.fetchAddressHistories(results).catch(error => {
+        // Fetch historical data for new addresses and forced refetches
+        const addressesToFetch = [...results, ...forcedRefetch];
+        if (addressesToFetch.length > 0 && this.addressHistoryFetcher) {
+          this.addressHistoryFetcher.fetchAddressHistories(addressesToFetch).catch(error => {
             this.logger.error('Failed to fetch historical data', { error: error.message });
           });
         }
 
-        this.logger.info('Addresses added', {
+        this.logger.info('Addresses processed', {
           added: results.length,
           alreadyExisted: alreadyExist.length,
-          invalid: invalidAddresses.length
+          forcedRefetch: forcedRefetch.length,
+          invalid: invalidAddresses.length,
+          force: !!force
         });
 
         return {
           success: true,
           added: results,
           alreadyExist,
+          forcedRefetch,
           invalid: invalidAddresses,
           summary: {
             totalRequested: addresses.length,
             added: results.length,
             alreadyExisted: alreadyExist.length,
+            forcedRefetch: forcedRefetch.length,
             invalid: invalidAddresses.length
           }
         };
@@ -334,6 +355,53 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to get stats', { error: error.message });
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: error.message
+        });
+      }
+    });
+
+    // Manual confirmation tracker trigger
+    this.fastify.post('/trigger/confirmations', async (request, reply) => {
+      try {
+        if (!this.confirmationTracker) {
+          return reply.code(503).send({
+            error: 'Service unavailable',
+            message: 'Confirmation tracker not available'
+          });
+        }
+
+        this.logger.info('Manual confirmation tracker run triggered via API');
+
+        // Get current block height and run the same logic as processNewBlock
+        const currentHeight = await this.confirmationTracker.rpc.getBlockCount();
+
+        this.logger.info('Running manual confirmation processing', { currentHeight });
+
+        // Process in parallel for efficiency (same as processNewBlock)
+        const [transactionStats, archiveStats] = await Promise.all([
+          this.confirmationTracker.processAllTransactions(),
+          this.confirmationTracker.checkAndArchiveTransactions(currentHeight)
+        ]);
+
+        // Process retry queue
+        await this.confirmationTracker.processRetryQueue();
+
+        const results = {
+          currentHeight,
+          transactionStats,
+          archiveStats
+        };
+
+        return {
+          success: true,
+          message: 'Confirmation tracker run completed',
+          results: results
+        };
+
+      } catch (error) {
+        this.logger.error('Manual confirmation tracker run failed', { error: error.message });
         return reply.code(500).send({
           error: 'Internal server error',
           message: error.message

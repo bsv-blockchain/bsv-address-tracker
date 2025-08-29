@@ -19,6 +19,18 @@ class RPCClient {
   }
 
   async makeRequest(method, params = [], timeout = 5000) {
+    const requestId = Date.now();
+    const enableVerboseLogging = process.env.RPC_VERBOSE_LOGGING === 'true';
+
+    if (enableVerboseLogging) {
+      this.logger.debug('RPC request initiated', {
+        method,
+        params,
+        requestId,
+        timeout
+      });
+    }
+
     const request = {
       method: 'POST',
       headers: {
@@ -27,7 +39,7 @@ class RPCClient {
       },
       body: JSON.stringify({
         jsonrpc: '1.0',
-        id: Date.now(),
+        id: requestId,
         method,
         params
       })
@@ -51,7 +63,24 @@ class RPCClient {
       const data = await response.json();
 
       if (data.error) {
+        if (enableVerboseLogging) {
+          this.logger.debug('RPC request failed with error', {
+            method,
+            params,
+            requestId,
+            error: data.error
+          });
+        }
         throw new Error(`RPC Error: ${data.error.message} (Code: ${data.error.code})`);
+      }
+
+      if (enableVerboseLogging) {
+        this.logger.debug('RPC request completed successfully', {
+          method,
+          params,
+          requestId,
+          resultSize: JSON.stringify(data.result).length
+        });
       }
 
       return data.result;
@@ -59,12 +88,21 @@ class RPCClient {
       clearTimeout(timeoutId);
 
       if (error.name === 'AbortError') {
+        if (enableVerboseLogging) {
+          this.logger.debug('RPC request timed out', {
+            method,
+            params,
+            requestId,
+            timeout
+          });
+        }
         throw new Error(`RPC request timeout after ${timeout}ms`);
       }
 
       this.logger.error('RPC request failed', {
         method,
         params,
+        requestId,
         error: error.message
       });
       throw error;

@@ -294,21 +294,6 @@ class WhatsOnChainClient {
   }
 
 
-  /**
-   * Get current blockchain info
-   * @returns {Object} - Blockchain information
-   */
-  async getChainInfo() {
-    try {
-      const endpoint = '/chain/info';
-      const response = await this.makeRequest(endpoint);
-      return response;
-
-    } catch (error) {
-      this.logger.error('Failed to fetch chain info', { error: error.message });
-      throw error;
-    }
-  }
 
   /**
    * Get address balance and transaction count
@@ -471,19 +456,6 @@ class WhatsOnChainClient {
     };
   }
 
-  /**
-   * Test API connectivity
-   * @returns {boolean} - Connection status
-   */
-  async ping() {
-    try {
-      await this.getChainInfo();
-      return true;
-    } catch (error) {
-      this.logger.error('WhatsOnChain API ping failed', { error: error.message });
-      return false;
-    }
-  }
 
   /**
    * Pause the request queue

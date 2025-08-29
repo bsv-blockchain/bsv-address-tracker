@@ -12,7 +12,7 @@ A demonstration of how to monitor Bitcoin SV addresses and track transaction lif
 - **Merkle Proof Verification** - Uses merkle proofs for efficient confirmation validation
 - **Scalable Architecture** - Bloom filters for O(1) address pre-screening
 - **Historical Data Integration** - Fetches transaction history from WhatsOnChain API
-- **Automatic Archival** - Archives fully confirmed transactions after 288+ confirmations
+- **Automatic Archival** - Archives fully confirmed transactions after 144+ confirmations
 - **Intelligent Retry Logic** - Handles failed operations with exponential backoff
 
 ## Architecture
@@ -77,8 +77,7 @@ API_PORT=3000
 API_HOST=0.0.0.0
 
 # Processing Configuration
-CONFIRMATION_THRESHOLDS=0,1,6,12,24,72,144,288
-AUTO_ARCHIVE_AFTER=288  # Archive after 288 confirmations (~2 days)
+AUTO_ARCHIVE_AFTER=144  # Archive after 144 confirmations (~1 day)
 
 # Network
 BSV_NETWORK=testnet  # or mainnet
@@ -192,21 +191,21 @@ This system demonstrates a complete transaction tracking workflow:
 3. **Historical Integration**: New addresses get their transaction history fetched from WhatsOnChain API (up to 500 transactions), showing how to integrate existing data.
 
 4. **Confirmation Lifecycle**: As blocks are mined:
-   - Transactions progress through confirmation states (0, 1, 6, 12, 24, 72, 144, 288+ confirmations)  
+   - Transactions receive increasing confirmation counts as new blocks are added
    - Merkle proofs verify confirmations without downloading full blocks
-   - Transactions are archived after reaching 288+ confirmations
+   - Transactions are archived after reaching 144+ confirmations
 
 5. **Efficient Operations**: 
-   - Rate-limited RPC calls (max 5 concurrent, 5s timeouts)
+   - Rate-limited RPC calls (max 4 concurrent, 5s timeouts)
    - Intelligent retry queues for failed operations  
-   - Selective updates based on confirmation thresholds
+   - Updates all tracked transactions on each new block
    - No raw transaction data storage or parsing
 
 ## Performance Optimizations
 
 - **Bloom Filters**: O(1) address screening with configurable false positive rate
 - **Merkle Proofs**: Lightweight transaction verification without downloading full blocks
-- **Threshold-Based Updates**: Only processes confirmations that might trigger notifications
+- **Comprehensive Updates**: Updates all tracked transactions efficiently on each new block
 - **Concurrent Processing**: Parallel processing of different confirmation tasks
 - **Rate Limiting**: Prevents overwhelming the SV Node with RPC requests
 
@@ -216,7 +215,7 @@ This system demonstrates a complete transaction tracking workflow:
 
 - `depositAddresses` - Monitored addresses and their statistics
 - `activeTransactions` - Transactions being tracked for confirmations
-- `archivedTransactions` - Fully confirmed transactions (288+ confirmations)
+- `archivedTransactions` - Fully confirmed transactions (144+ confirmations)
 
 ## Important: What This System Does NOT Do
 
@@ -275,5 +274,5 @@ The system logs all important events. Monitor the logs for:
 ### High Memory Usage
 - Adjust `CONFIRMATION_BATCH_SIZE` for smaller batches
 - Reduce `pendingTxLimit` in confirmation tracker
-- Increase `AUTO_ARCHIVE_AFTER` to archive transactions sooner
+- Decrease `AUTO_ARCHIVE_AFTER` to archive transactions sooner
 

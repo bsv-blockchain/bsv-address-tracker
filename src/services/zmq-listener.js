@@ -116,18 +116,10 @@ class ZMQListener {
     try {
       const txHex = rawTxBuffer.toString('hex');
 
-      if (this.verboseLogging) {
-        this.logger.info('ZMQ: Received raw transaction', {
-          txHex: txHex.substring(0, 64) + '...',
-          size: rawTxBuffer.length,
-          fullHex: this.verboseLogging ? txHex : undefined
-        });
-      } else {
-        this.logger.debug('Received raw transaction', {
-          txHex: txHex.substring(0, 64) + '...',
-          size: rawTxBuffer.length
-        });
-      }
+      this.logger.debug('Received raw transaction', {
+        txHex: txHex.substring(0, 64) + '...',
+        size: rawTxBuffer.length
+      });
 
       // Process transaction to check if we're tracking any addresses
       if (this.transactionTracker && this.transactionTracker.isInitialized) {
