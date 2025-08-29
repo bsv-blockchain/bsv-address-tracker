@@ -1,26 +1,31 @@
 # BSV Address Tracker
 
-A high-performance Bitcoin SV address monitoring system that tracks transactions and confirmations in real-time using ZeroMQ feeds from an SV Node.
+A demonstration of how to monitor Bitcoin SV addresses and track transaction lifecycles through the confirmation process. This system showcases real-time transaction detection, confirmation tracking via merkle proofs, and historical data integration.
+
+**Purpose**: This is a educational/demonstration system that shows how to link transactions to addresses and track their confirmation journey. Other systems would handle transaction amounts, balances, and business logic.
 
 ## Features
 
-- **Real-time Transaction Monitoring** - Monitors incoming transactions via ZeroMQ feeds
-- **Address Management API** - RESTful API for adding/removing addresses to monitor
-- **Smart Confirmation Tracking** - Uses merkle proofs for efficient confirmation verification
+- **Real-time Transaction Detection** - Monitors incoming transactions via ZeroMQ feeds
+- **Address Management API** - RESTful API for adding/removing addresses to monitor  
+- **Transaction Lifecycle Tracking** - Tracks transactions from detection through final confirmation
+- **Merkle Proof Verification** - Uses merkle proofs for efficient confirmation validation
 - **Scalable Architecture** - Bloom filters for O(1) address pre-screening
-- **Historical Data Import** - Fetches transaction history from WhatsOnChain
-- **Automatic Archival** - Archives fully confirmed transactions after configurable thresholds
-- **Retry Logic** - Intelligent retry mechanism for failed RPC calls with timeouts
+- **Historical Data Integration** - Fetches transaction history from WhatsOnChain API
+- **Automatic Archival** - Archives fully confirmed transactions after 288+ confirmations
+- **Intelligent Retry Logic** - Handles failed operations with exponential backoff
 
 ## Architecture
 
-The system consists of several key components:
+The system demonstrates a complete transaction lifecycle tracking pipeline:
 
-- **Transaction Tracker** - Monitors ZMQ raw transaction feeds and identifies relevant transactions
-- **Confirmation Tracker** - Verifies transactions using merkle proofs and tracks confirmation counts
-- **Address History Fetcher** - Imports historical transaction data for newly added addresses
-- **API Server** - RESTful API for managing addresses and viewing transactions
-- **ZMQ Listener** - Subscribes to real-time blockchain events from SV Node
+- **Transaction Tracker** - Detects transactions involving monitored addresses from ZMQ feeds
+- **Confirmation Tracker** - Tracks confirmation counts using merkle proofs (no raw transaction data needed)
+- **Address History Fetcher** - Integrates historical transactions from WhatsOnChain API
+- **API Server** - RESTful interface for address management and transaction status queries
+- **ZMQ Listener** - Real-time blockchain event subscription from SV Node
+
+**Key Principle**: The system only tracks transaction IDs and their relationship to addresses. Transaction amounts, balances, and detailed parsing are intentionally excluded to keep the demonstration focused on the core lifecycle tracking pattern.
 
 ## Prerequisites
 
@@ -176,22 +181,26 @@ curl http://localhost:3000/stats
 curl -X DELETE http://localhost:3000/addresses/mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR
 ```
 
-## How It Works
+## Transaction Lifecycle Demo
 
-1. **Address Registration**: When you add an address via the API, it's stored in MongoDB and added to a Bloom filter for efficient pre-screening.
+This system demonstrates a complete transaction tracking workflow:
 
-2. **Transaction Detection**: The ZMQ listener receives all raw transactions from the network. Each transaction is quickly checked against the Bloom filter, then verified against the actual address list.
+1. **Address Registration**: Addresses are added to monitoring via API, stored in MongoDB, and indexed in Bloom filters for O(1) pre-screening.
 
-3. **Confirmation Tracking**: When a new block is announced via ZMQ, the system:
-   - Checks pending transactions for confirmation using `getmerkleproof` RPC calls
-   - Updates confirmation counts for transactions that might cross notification thresholds
-   - Archives transactions that have reached the maximum confirmation threshold
+2. **Transaction Detection**: ZMQ listener receives all network transactions, pre-screens them with Bloom filters, then verifies actual address involvement.
 
-4. **Efficient Processing**: The system uses:
-   - Rate-limited RPC calls (max 5 concurrent, 200ms intervals)
-   - 5-second timeouts on all RPC calls
-   - Intelligent retry queues for failed operations
-   - Selective confirmation updates based on thresholds
+3. **Historical Integration**: New addresses get their transaction history fetched from WhatsOnChain API (up to 500 transactions), showing how to integrate existing data.
+
+4. **Confirmation Lifecycle**: As blocks are mined:
+   - Transactions progress through confirmation states (0, 1, 6, 12, 24, 72, 144, 288+ confirmations)  
+   - Merkle proofs verify confirmations without downloading full blocks
+   - Transactions are archived after reaching 288+ confirmations
+
+5. **Efficient Operations**: 
+   - Rate-limited RPC calls (max 5 concurrent, 5s timeouts)
+   - Intelligent retry queues for failed operations  
+   - Selective updates based on confirmation thresholds
+   - No raw transaction data storage or parsing
 
 ## Performance Optimizations
 
@@ -208,6 +217,27 @@ curl -X DELETE http://localhost:3000/addresses/mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhw
 - `depositAddresses` - Monitored addresses and their statistics
 - `activeTransactions` - Transactions being tracked for confirmations
 - `archivedTransactions` - Fully confirmed transactions (288+ confirmations)
+
+## Important: What This System Does NOT Do
+
+This is an educational demonstration focused on transaction lifecycle tracking. It intentionally **does not**:
+
+- ❌ Track transaction amounts or values
+- ❌ Calculate address balances  
+- ❌ Store raw transaction data
+- ❌ Parse transaction inputs/outputs in detail
+- ❌ Handle payments, settlements, or financial logic
+- ❌ Implement wallet functionality
+
+**What it DOES demonstrate**:
+- ✅ Real-time transaction detection for monitored addresses
+- ✅ Confirmation tracking through the blockchain lifecycle  
+- ✅ Historical transaction integration from external APIs
+- ✅ Efficient address monitoring with Bloom filters
+- ✅ Merkle proof verification for confirmations
+- ✅ Scalable architecture patterns for blockchain monitoring
+
+This system shows **how to link transactions to addresses and track their confirmation journey**. Production systems would extend this foundation with business logic, amount tracking, balance calculations, and application-specific features.
 
 ## Development
 

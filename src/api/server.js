@@ -27,7 +27,7 @@ class APIServer {
 
   setupRoutes() {
     // Health check
-    this.fastify.get('/health', async (request, reply) => {
+    this.fastify.get('/health', (_request, _reply) => {
       return { status: 'ok', timestamp: new Date() };
     });
 
@@ -35,11 +35,11 @@ class APIServer {
     this.fastify.post('/addresses', async (request, reply) => {
       try {
         const { addresses } = request.body;
-        
+
         if (!addresses || !Array.isArray(addresses) || addresses.length === 0) {
-          return reply.code(400).send({ 
-            error: 'Invalid request', 
-            message: 'Must provide an array of addresses' 
+          return reply.code(400).send({
+            error: 'Invalid request',
+            message: 'Must provide an array of addresses'
           });
         }
 
@@ -56,20 +56,20 @@ class APIServer {
         }
 
         if (validAddresses.length === 0) {
-          return reply.code(400).send({ 
-            error: 'No valid addresses', 
-            invalidAddresses 
+          return reply.code(400).send({
+            error: 'No valid addresses',
+            invalidAddresses
           });
         }
 
         // Add addresses to database
         const results = [];
         const alreadyExist = [];
-        
+
         for (const address of validAddresses) {
           try {
             const existing = await this.db.trackedAddresses.findOne({ _id: address });
-            
+
             if (existing) {
               alreadyExist.push(address);
             } else {
@@ -77,11 +77,12 @@ class APIServer {
                 _id: address,
                 created_at: new Date(),
                 active: true,
-                total_received: 0,
                 transaction_count: 0,
                 last_seen: null,
                 label: null,
-                metadata: {}
+                metadata: {},
+                historical_fetched: false,
+                historical_fetched_at: null
               });
               results.push(address);
             }
@@ -98,7 +99,7 @@ class APIServer {
 
         // Fetch historical data for new addresses
         if (results.length > 0 && this.addressHistoryFetcher) {
-          this.addressHistoryFetcher.fetchHistoricalTransactions(results).catch(error => {
+          this.addressHistoryFetcher.fetchAddressHistories(results).catch(error => {
             this.logger.error('Failed to fetch historical data', { error: error.message });
           });
         }
@@ -124,9 +125,9 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to add addresses', { error: error.message });
-        return reply.code(500).send({ 
+        return reply.code(500).send({
           error: 'Internal server error',
-          message: error.message 
+          message: error.message
         });
       }
     });
@@ -135,7 +136,7 @@ class APIServer {
     this.fastify.get('/addresses', async (request, reply) => {
       try {
         const { active, limit = 100, offset = 0 } = request.query;
-        
+
         const filter = {};
         if (active !== undefined) {
           filter.active = active === 'true';
@@ -154,7 +155,6 @@ class APIServer {
             address: addr._id,
             active: addr.active,
             created_at: addr.created_at,
-            total_received: addr.total_received,
             transaction_count: addr.transaction_count,
             last_seen: addr.last_seen,
             label: addr.label
@@ -168,9 +168,9 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to get addresses', { error: error.message });
-        return reply.code(500).send({ 
+        return reply.code(500).send({
           error: 'Internal server error',
-          message: error.message 
+          message: error.message
         });
       }
     });
@@ -179,13 +179,13 @@ class APIServer {
     this.fastify.get('/addresses/:address', async (request, reply) => {
       try {
         const { address } = request.params;
-        
+
         const addressDoc = await this.db.trackedAddresses.findOne({ _id: address });
-        
+
         if (!addressDoc) {
-          return reply.code(404).send({ 
+          return reply.code(404).send({
             error: 'Address not found',
-            address 
+            address
           });
         }
 
@@ -200,14 +200,12 @@ class APIServer {
           address: addressDoc._id,
           active: addressDoc.active,
           created_at: addressDoc.created_at,
-          total_received: addressDoc.total_received,
           transaction_count: addressDoc.transaction_count,
           last_seen: addressDoc.last_seen,
           label: addressDoc.label,
           metadata: addressDoc.metadata,
           recent_transactions: recentTransactions.map(tx => ({
             txid: tx._id,
-            amount: tx.amount,
             confirmations: tx.confirmations,
             status: tx.status,
             first_seen: tx.first_seen,
@@ -217,9 +215,9 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to get address details', { error: error.message });
-        return reply.code(500).send({ 
+        return reply.code(500).send({
           error: 'Internal server error',
-          message: error.message 
+          message: error.message
         });
       }
     });
@@ -228,16 +226,16 @@ class APIServer {
     this.fastify.delete('/addresses/:address', async (request, reply) => {
       try {
         const { address } = request.params;
-        
+
         const result = await this.db.trackedAddresses.updateOne(
           { _id: address },
           { $set: { active: false, deactivated_at: new Date() } }
         );
-        
+
         if (result.matchedCount === 0) {
-          return reply.code(404).send({ 
+          return reply.code(404).send({
             error: 'Address not found',
-            address 
+            address
           });
         }
 
@@ -256,9 +254,9 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to deactivate address', { error: error.message });
-        return reply.code(500).send({ 
+        return reply.code(500).send({
           error: 'Internal server error',
-          message: error.message 
+          message: error.message
         });
       }
     });
@@ -267,7 +265,7 @@ class APIServer {
     this.fastify.get('/transactions', async (request, reply) => {
       try {
         const { status, limit = 50, offset = 0 } = request.query;
-        
+
         const filter = {};
         if (status) {
           filter.status = status;
@@ -286,12 +284,10 @@ class APIServer {
           transactions: transactions.map(tx => ({
             txid: tx._id,
             addresses: tx.addresses,
-            amount: tx.amount,
             confirmations: tx.confirmations,
             status: tx.status,
             first_seen: tx.first_seen,
-            block_height: tx.block_height,
-            outputs: tx.outputs
+            block_height: tx.block_height
           })),
           pagination: {
             limit: parseInt(limit),
@@ -302,9 +298,9 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to get transactions', { error: error.message });
-        return reply.code(500).send({ 
+        return reply.code(500).send({
           error: 'Internal server error',
-          message: error.message 
+          message: error.message
         });
       }
     });
@@ -338,9 +334,9 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to get stats', { error: error.message });
-        return reply.code(500).send({ 
+        return reply.code(500).send({
           error: 'Internal server error',
-          message: error.message 
+          message: error.message
         });
       }
     });

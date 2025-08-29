@@ -136,8 +136,7 @@ class ZMQListener {
         if (txResult) {
           this.logger.info('Transaction tracked', {
             txid: txResult.txid,
-            outputs: txResult.outputs,
-            totalAmount: txResult.totalAmount,
+            addressCount: txResult.addressCount,
             addresses: txResult.addresses
           });
         }

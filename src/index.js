@@ -66,12 +66,12 @@ class BSVAddressTracker {
 
       // Initialize API server
       this.apiServer = new APIServer(
-        this.db, 
-        this.transactionTracker, 
-        this.confirmationTracker, 
+        this.db,
+        this.transactionTracker,
+        this.confirmationTracker,
         this.addressHistoryFetcher
       );
-      
+
       const apiPort = parseInt(process.env.API_PORT) || 3000;
       const apiHost = process.env.API_HOST || '0.0.0.0';
       await this.apiServer.start(apiPort, apiHost);
@@ -81,6 +81,15 @@ class BSVAddressTracker {
         apiPort,
         apiHost
       });
+
+      // Fetch historical data for any unfetched addresses on startup
+      if (this.addressHistoryFetcher) {
+        this.addressHistoryFetcher.fetchUnfetchedHistories().catch(error => {
+          this.logger.error('Failed to fetch unfetched histories on startup', {
+            error: error.message
+          });
+        });
+      }
 
       // Setup health monitoring
       this.setupHealthMonitoring();

@@ -13,7 +13,6 @@ services:
       MONGO_INITDB_DATABASE: bsv_tracker
     volumes:
       - mongodb_data:/data/db
-      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
     networks:
       - bsv-tracker
 

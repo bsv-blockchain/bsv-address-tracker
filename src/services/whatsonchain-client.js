@@ -64,6 +64,11 @@ class WhatsOnChainClient {
       const url = `${this.baseUrl}${endpoint}`;
 
       try {
+        // Log WoC request if verbose logging is enabled
+        if (process.env.WOC_VERBOSE_LOGGING === 'true') {
+          this.logger.info('WhatsOnChain request', { url });
+        }
+
         const response = await fetch(url, {
           method: 'GET',
           headers: {
@@ -77,15 +82,30 @@ class WhatsOnChainClient {
         if (!response.ok) {
           // Handle specific error codes
           if (response.status === 429) {
+            if (process.env.WOC_VERBOSE_LOGGING === 'true') {
+              this.logger.info('WhatsOnChain request completed', { url, status: '429 Rate Limited' });
+            }
             throw new Error('Rate limit exceeded');
           }
           if (response.status === 404) {
+            if (process.env.WOC_VERBOSE_LOGGING === 'true') {
+              this.logger.info('WhatsOnChain request completed', { url, status: '404 Not Found' });
+            }
             return null; // Address not found or no history
+          }
+          if (process.env.WOC_VERBOSE_LOGGING === 'true') {
+            this.logger.info('WhatsOnChain request completed', { url, status: `${response.status} ${response.statusText}` });
           }
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
         const data = await response.json();
+
+        // Log successful completion if verbose logging is enabled
+        if (process.env.WOC_VERBOSE_LOGGING === 'true') {
+          this.logger.info('WhatsOnChain request completed', { url, status: 'success' });
+        }
+
         return data;
 
       } catch (error) {
@@ -99,40 +119,67 @@ class WhatsOnChainClient {
   }
 
   /**
-   * Get confirmed transaction history for multiple addresses (bulk endpoint)
+   * DEPRECATED: Get confirmed transaction history for multiple addresses (bulk endpoint)
+   * This method is deprecated in favor of individual address calls with pagination
+   * @deprecated Use getAddressConfirmedHistoryWithPagination instead
    * @param {string[]} addresses - Array of addresses (max 20 according to docs)
    * @returns {Object} - Address history mapping
    */
   async getBulkAddressHistory(addresses) {
+    this.logger.warn('getBulkAddressHistory is deprecated - use individual address calls instead');
+
     if (!Array.isArray(addresses) || addresses.length === 0) {
       return {};
     }
 
-    if (addresses.length > 20) {
-      throw new Error('WhatsOnChain bulk endpoint supports maximum 20 addresses');
+    // Convert to individual calls for compatibility
+    const historyMap = {};
+    for (const address of addresses) {
+      try {
+        const history = await this.getAddressConfirmedHistoryWithPagination(address, 100);
+        historyMap[address] = history;
+      } catch (error) {
+        this.logger.error('Failed to fetch individual address in deprecated bulk method', {
+          address,
+          error: error.message
+        });
+        historyMap[address] = [];
+      }
     }
 
+    return historyMap;
+  }
+
+  /**
+   * Get confirmed transaction history for a single address with pagination
+   * @param {string} address - BSV address
+   * @param {string} token - Next page token (optional)
+   * @returns {Object} - Transaction history with pagination info
+   */
+  async getAddressConfirmedHistory(address, token = null) {
     try {
-      const addressList = addresses.join(',');
-      const endpoint = `/addresses/${addressList}/history`;
-
-      this.logger.debug('Fetching bulk address history', {
-        addresses: addresses.length,
-        endpoint
-      });
-
-      const response = await this.makeRequest(endpoint);
-
-      if (!response) {
-        return {};
+      const endpoint = `/address/${address}/confirmed/history`;
+      const params = new URLSearchParams();
+      if (token) {
+        params.append('token', token);
       }
 
-      // Response format: { "address1": [...transactions], "address2": [...transactions] }
-      return response;
+      const url = params.toString() ? `${endpoint}?${params}` : endpoint;
+
+      this.logger.debug('Fetching confirmed address history', {
+        address,
+        token: token || 'none',
+        url
+      });
+
+      const response = await this.makeRequest(url);
+
+      return response || { result: [], error: null };
 
     } catch (error) {
-      this.logger.error('Failed to fetch bulk address history', {
-        addresses,
+      this.logger.error('Failed to fetch confirmed address history', {
+        address,
+        token,
         error: error.message
       });
       throw error;
@@ -140,7 +187,7 @@ class WhatsOnChainClient {
   }
 
   /**
-   * Get confirmed transaction history for a single address with pagination
+   * Get confirmed transaction history for a single address with pagination (legacy method)
    * @param {string} address - BSV address
    * @param {number} from - Starting index (default: 0)
    * @param {number} to - Ending index (default: 100, max: 1000)
@@ -246,25 +293,6 @@ class WhatsOnChainClient {
     }
   }
 
-  /**
-   * Get raw transaction hex by transaction ID
-   * @param {string} txid - Transaction ID
-   * @returns {string|null} - Raw transaction hex
-   */
-  async getRawTransaction(txid) {
-    try {
-      const endpoint = `/tx/${txid}/hex`;
-      const response = await this.makeRequest(endpoint);
-      return response;
-
-    } catch (error) {
-      this.logger.error('Failed to fetch raw transaction', {
-        txid,
-        error: error.message
-      });
-      throw error;
-    }
-  }
 
   /**
    * Get current blockchain info
@@ -303,63 +331,127 @@ class WhatsOnChainClient {
   }
 
   /**
-   * Process addresses in optimal batches using bulk endpoint where possible
+   * Process addresses using individual confirmed history endpoint with pagination
    * @param {string[]} addresses - Array of addresses to process
    * @param {Function} processor - Function to process each batch result
+   * @param {number} maxHistoryPerAddress - Maximum transactions per address (default: 500)
    * @returns {Array} - Processing results
    */
-  async processBulkAddresses(addresses, processor) {
+  async processBulkAddresses(addresses, processor, maxHistoryPerAddress = 500) {
     const results = [];
-    const batchSize = 20; // WhatsOnChain bulk limit
 
-    for (let i = 0; i < addresses.length; i += batchSize) {
-      const batch = addresses.slice(i, i + batchSize);
-
+    for (const address of addresses) {
       try {
-        this.logger.debug('Processing address batch', {
-          batchIndex: Math.floor(i / batchSize) + 1,
-          totalBatches: Math.ceil(addresses.length / batchSize),
-          batchSize: batch.length
+        this.logger.debug('Processing individual address history', {
+          address,
+          maxHistoryPerAddress
         });
 
-        const historyData = await this.getBulkAddressHistory(batch);
-        const batchResult = await processor(historyData, batch);
+        // Fetch confirmed history with pagination (up to 5 pages of 100 = 500 max)
+        const history = await this.getAddressConfirmedHistoryWithPagination(address, maxHistoryPerAddress);
+        const historyData = { [address]: history };
 
-        if (Array.isArray(batchResult)) {
-          results.push(...batchResult);
+        const addressResult = await processor(historyData, [address]);
+
+        if (Array.isArray(addressResult)) {
+          results.push(...addressResult);
         } else {
-          results.push(batchResult);
+          results.push(addressResult);
         }
 
       } catch (error) {
-        this.logger.error('Failed to process address batch', {
-          batch,
+        this.logger.error('Failed to process individual address', {
+          address,
           error: error.message
         });
-
-        // Fall back to individual processing for this batch
-        for (const address of batch) {
-          try {
-            const history = await this.getAllAddressHistory(address);
-            const singleResult = await processor({ [address]: history }, [address]);
-
-            if (Array.isArray(singleResult)) {
-              results.push(...singleResult);
-            } else {
-              results.push(singleResult);
-            }
-
-          } catch (singleError) {
-            this.logger.error('Failed to process single address fallback', {
-              address,
-              error: singleError.message
-            });
-          }
-        }
       }
     }
 
     return results;
+  }
+
+  /**
+   * Get confirmed transaction history for an address with automatic pagination
+   * @param {string} address - BSV address
+   * @param {number} maxTransactions - Maximum transactions to fetch (default: 500)
+   * @returns {Array} - Complete transaction history up to maxTransactions
+   */
+  async getAddressConfirmedHistoryWithPagination(address, maxTransactions = 500) {
+    const allTransactions = [];
+    let nextToken = null;
+    const pageSize = 100; // API returns up to 100 per page
+    let pagesProcessed = 0;
+    const maxPages = Math.ceil(maxTransactions / pageSize);
+
+    try {
+      while (pagesProcessed < maxPages) {
+        this.logger.debug('Fetching confirmed history page', {
+          address,
+          page: pagesProcessed + 1,
+          maxPages,
+          nextToken: nextToken || 'first'
+        });
+
+        const response = await this.getAddressConfirmedHistory(address, nextToken);
+
+        if (!response || !response.result || response.result.length === 0) {
+          this.logger.debug('No more transactions found', { address, pagesProcessed });
+          break;
+        }
+
+        const transactions = response.result;
+        allTransactions.push(...transactions);
+        pagesProcessed++;
+
+        this.logger.debug('Fetched confirmed history page', {
+          address,
+          page: pagesProcessed,
+          transactionsInPage: transactions.length,
+          totalFetched: allTransactions.length
+        });
+
+        // Check if we have a next page token
+        if (response.next && allTransactions.length < maxTransactions) {
+          nextToken = response.next;
+        } else {
+          // No more pages or reached max limit
+          break;
+        }
+
+        // If this page returned fewer than expected, we've reached the end
+        if (transactions.length < pageSize) {
+          this.logger.debug('Last page reached (partial page)', {
+            address,
+            transactionsInPage: transactions.length,
+            expectedPageSize: pageSize
+          });
+          break;
+        }
+      }
+
+      // Trim to exact limit if we exceeded it
+      if (allTransactions.length > maxTransactions) {
+        allTransactions.splice(maxTransactions);
+      }
+
+      this.logger.info('Completed confirmed address history fetch', {
+        address,
+        totalTransactions: allTransactions.length,
+        pagesProcessed,
+        maxTransactions
+      });
+
+      return allTransactions;
+
+    } catch (error) {
+      this.logger.error('Failed to fetch confirmed address history with pagination', {
+        address,
+        partialResults: allTransactions.length,
+        pagesProcessed,
+        error: error.message
+      });
+      throw error;
+    }
   }
 
   /**

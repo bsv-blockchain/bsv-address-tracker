@@ -1,13 +1,13 @@
 import winston from 'winston';
 import AddressBloomFilter from '../lib/bloom-filter.js';
-import BSVUtils from '../lib/bitcoin-utils.js';
+import AddressExtractor from '../lib/address-extractor.js';
 
 class TransactionTracker {
   constructor(mongodb, addressHistoryFetcher = null) {
     this.db = mongodb;
     this.addressHistoryFetcher = addressHistoryFetcher;
     this.bloomFilter = null;
-    this.bsvUtils = new BSVUtils();
+    this.addressExtractor = new AddressExtractor();
     this.isInitialized = false;
 
     this.logger = winston.createLogger({
@@ -59,7 +59,7 @@ class TransactionTracker {
     try {
       // Stream addresses from database in batches
       const cursor = this.db.trackedAddresses.find(
-        { status: 'active' },
+        { active: true },
         { projection: { _id: 1 } }
       );
 
@@ -114,11 +114,12 @@ class TransactionTracker {
     }
 
     try {
-      // Parse the transaction
-      const parsedTx = this.bsvUtils.parseTransaction(txHex);
+      // Extract addresses using BSV SDK
+      const network = process.env.BSV_NETWORK || 'testnet';
+      const parsedTx = this.addressExtractor.extractAddressesFromTx(txHex, network);
 
       // Quick bloom filter pre-screening
-      const candidateAddresses = this.bloomFilter.filterAddresses(parsedTx.addresses);
+      const candidateAddresses = this.bloomFilter.filterAddresses(parsedTx.allAddresses);
 
       if (candidateAddresses.length === 0) {
         // No possible matches, skip expensive database lookup
@@ -126,9 +127,9 @@ class TransactionTracker {
       }
 
       // Verify which addresses we're actually tracking
-      const trackedOutputs = await this.verifyTrackedAddresses(parsedTx, candidateAddresses);
+      const trackedAddressData = await this.verifyTrackedAddresses(parsedTx, candidateAddresses);
 
-      if (trackedOutputs.length === 0) {
+      if (trackedAddressData.length === 0) {
         // False positive from bloom filter
         this.logger.debug('Bloom filter false positive', {
           txid: parsedTx.txid,
@@ -138,13 +139,12 @@ class TransactionTracker {
       }
 
       // Record the transaction
-      const transactionRecord = await this.recordTransaction(parsedTx, trackedOutputs);
+      const transactionRecord = await this.recordTransaction(parsedTx, trackedAddressData);
 
       this.logger.info('Transaction tracked', {
         txid: parsedTx.txid,
-        outputCount: trackedOutputs.length,
-        totalAmount: trackedOutputs.reduce((sum, o) => sum + o.amount, 0),
-        addresses: trackedOutputs.map(o => o.address)
+        addressCount: trackedAddressData.length,
+        addresses: trackedAddressData.map(a => a.address)
       });
 
       return transactionRecord;
@@ -160,9 +160,9 @@ class TransactionTracker {
 
   /**
    * Verify which candidate addresses are actually being tracked
-   * @param {Object} parsedTx - Parsed transaction
+   * @param {Object} parsedTx - Parsed transaction with address lists
    * @param {string[]} candidateAddresses - Addresses that passed bloom filter
-   * @returns {Array} - Verified tracked outputs
+   * @returns {Array} - Verified tracked addresses
    */
   async verifyTrackedAddresses(parsedTx, candidateAddresses) {
     try {
@@ -170,30 +170,29 @@ class TransactionTracker {
       const trackedAddresses = await this.db.trackedAddresses.find(
         {
           _id: { $in: candidateAddresses },
-          status: 'active'
+          active: true
         },
-        { projection: { _id: 1, user_id: 1, metadata: 1 } }
+        { projection: { _id: 1, label: 1, metadata: 1 } }
       ).toArray();
 
       const trackedMap = new Map(trackedAddresses.map(addr => [addr._id, addr]));
-      const trackedOutputs = [];
+      const trackedAddressData = [];
 
-      // Check each output for tracked addresses
-      for (const output of parsedTx.outputs) {
-        if (output.address && trackedMap.has(output.address)) {
-          const addressInfo = trackedMap.get(output.address);
+      // Check all addresses found in the transaction
+      for (const address of parsedTx.allAddresses) {
+        if (trackedMap.has(address)) {
+          const addressInfo = trackedMap.get(address);
 
-          trackedOutputs.push({
-            address: output.address,
-            amount: output.value,
-            outputIndex: output.index,
-            userId: addressInfo.user_id,
-            scriptType: output.type
+          trackedAddressData.push({
+            address: address,
+            label: addressInfo.label,
+            isInput: parsedTx.inputAddresses.includes(address),
+            isOutput: parsedTx.outputAddresses.includes(address)
           });
         }
       }
 
-      return trackedOutputs;
+      return trackedAddressData;
 
     } catch (error) {
       this.logger.error('Failed to verify tracked addresses', {
@@ -208,31 +207,23 @@ class TransactionTracker {
   /**
    * Record transaction to the database
    * @param {Object} parsedTx - Parsed transaction
-   * @param {Array} trackedOutputs - Verified tracked outputs
+   * @param {Array} trackedAddressData - Tracked address data
    * @returns {Object} - Recorded transaction info
    */
-  async recordTransaction(parsedTx, trackedOutputs) {
+  async recordTransaction(parsedTx, trackedAddressData) {
     try {
       const now = new Date();
 
-      // Prepare transaction record
+      // Prepare transaction record - just link transaction to addresses
       const transactionRecord = {
         _id: parsedTx.txid,
-        addresses: trackedOutputs.map(o => o.address),
-        amount: trackedOutputs.reduce((sum, o) => sum + o.amount, 0),
+        addresses: trackedAddressData.map(a => a.address),
         block_height: null, // Will be set when confirmed
         block_hash: null,
         confirmations: 0,
         first_seen: now,
         confirmed_at: null,
         status: 'pending',
-        outputs: trackedOutputs.map(o => ({
-          address: o.address,
-          amount: o.amount,
-          output_index: o.outputIndex,
-          user_id: o.userId
-        })),
-        raw_hex: parsedTx.hex,
         created_at: now
       };
 
@@ -244,12 +235,11 @@ class TransactionTracker {
       );
 
       // Update address last activity
-      await this.updateAddressActivity(trackedOutputs.map(o => o.address), now);
+      await this.updateAddressActivity(trackedAddressData.map(a => a.address), now);
 
       return {
         txid: parsedTx.txid,
-        outputs: trackedOutputs.length,
-        totalAmount: transactionRecord.amount,
+        addressCount: trackedAddressData.length,
         addresses: transactionRecord.addresses,
         status: 'recorded'
       };

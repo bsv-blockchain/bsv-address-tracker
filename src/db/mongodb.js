@@ -38,46 +38,74 @@ class MongoDB {
   }
 
   async setupCollections() {
-    // Create collections if they don't exist
-    const collections = ['trackedAddresses', 'activeTransactions', 'archivedTransactions'];
+    // Define all collections used by the system
+    const collections = [
+      'trackedAddresses',    // Addresses being monitored
+      'activeTransactions',  // Transactions with < 288 confirmations
+      'archivedTransactions' // Fully confirmed transactions
+    ];
 
     for (const collectionName of collections) {
       try {
-        await this.db.createCollection(collectionName);
-        this.logger.debug(`Created collection: ${collectionName}`);
-      } catch (error) {
-        if (error.code !== 48) { // Collection already exists
-          this.logger.error(`Failed to create collection ${collectionName}`, { error: error.message });
-          throw error;
+        // Check if collection exists
+        const existingCollections = await this.db.listCollections({ name: collectionName }).toArray();
+
+        if (existingCollections.length === 0) {
+          await this.db.createCollection(collectionName);
+          this.logger.info(`Created collection: ${collectionName}`);
+        } else {
+          this.logger.debug(`Collection already exists: ${collectionName}`);
         }
+      } catch (error) {
+        this.logger.error(`Failed to create collection ${collectionName}`, { error: error.message });
+        throw error;
       }
     }
   }
 
   async createIndexes() {
     try {
-      // Active transactions indexes
-      await this.db.collection('activeTransactions').createIndexes([
-        { key: { block_height: 1 }, name: 'block_height_1' },
-        { key: { addresses: 1 }, name: 'addresses_1' },
-        { key: { status: 1 }, name: 'status_1' },
-        { key: { confirmations: 1 }, name: 'confirmations_1' },
-        { key: { block_height: 1, status: 1 }, name: 'block_height_status_1' }
+      // trackedAddresses indexes
+      await this.db.collection('trackedAddresses').createIndexes([
+        // _id is the address itself (natural index)
+        { key: { active: 1 }, name: 'active_1' },
+        { key: { created_at: 1 }, name: 'created_at_1' },
+        { key: { historical_fetched: 1 }, name: 'historical_fetched_1' },
+        // Compound index for finding unfetched active addresses
+        { key: { active: 1, historical_fetched: 1 }, name: 'active_historical_fetched_1' }
       ]);
 
-      // Tracked addresses indexes (natural _id index is sufficient for address lookups)
+      // activeTransactions indexes
+      await this.db.collection('activeTransactions').createIndexes([
+        // _id is the transaction ID (natural index)
+        { key: { addresses: 1 }, name: 'addresses_1' },
+        { key: { status: 1 }, name: 'status_1' },
+        { key: { block_height: 1 }, name: 'block_height_1' },
+        { key: { confirmations: 1 }, name: 'confirmations_1' },
+        { key: { first_seen: -1 }, name: 'first_seen_desc' },
+        // Compound indexes for common queries
+        { key: { block_height: 1, status: 1 }, name: 'block_height_status_1' },
+        { key: { status: 1, block_height: 1 }, name: 'status_block_height_1' }
+      ]);
 
-      // Archived transactions indexes
+      // archivedTransactions indexes
       await this.db.collection('archivedTransactions').createIndexes([
-        { key: { address: 1 }, name: 'address_1' },
-        { key: { archived_at: 1 }, name: 'archived_at_1' },
-        { key: { block_height: 1 }, name: 'block_height_1' }
+        // _id is the transaction ID (natural index)
+        { key: { addresses: 1 }, name: 'addresses_1' },
+        { key: { archived_at: -1 }, name: 'archived_at_desc' },
+        { key: { block_height: 1 }, name: 'block_height_1' },
+        { key: { confirmed_at: 1 }, name: 'confirmed_at_1' }
       ]);
 
       this.logger.info('Created database indexes successfully');
     } catch (error) {
-      this.logger.error('Failed to create indexes', { error: error.message });
-      throw error;
+      // Ignore "index already exists" errors
+      if (error.code === 85 || error.codeName === 'IndexOptionsConflict') {
+        this.logger.debug('Some indexes already exist, skipping');
+      } else {
+        this.logger.error('Failed to create indexes', { error: error.message });
+        throw error;
+      }
     }
   }
 
@@ -125,6 +153,29 @@ class MongoDB {
     } catch (error) {
       this.logger.error('Failed to get database stats', { error: error.message });
       return null;
+    }
+  }
+
+  // Clean up old/duplicate collections (utility method)
+  async cleanupLegacyCollections() {
+    const legacyNames = [
+      'blocks',               // No longer needed (using merkle proofs)
+      'tracked_addresses',    // Old name with underscore
+      'active_transactions',  // Old name with underscore
+      'archived_transactions', // Old name with underscore
+      'depositAddresses'      // Old deposit-specific name
+    ];
+
+    for (const name of legacyNames) {
+      try {
+        const exists = await this.db.listCollections({ name }).toArray();
+        if (exists.length > 0) {
+          await this.db.collection(name).drop();
+          this.logger.info(`Dropped legacy collection: ${name}`);
+        }
+      } catch (error) {
+        this.logger.debug(`Could not drop collection ${name}:`, error.message);
+      }
     }
   }
 }

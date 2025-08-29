@@ -204,9 +204,7 @@ class ConfirmationTracker {
                 txid: tx._id,
                 threshold,
                 confirmations: newConfirmations,
-                addresses: tx.addresses,
-                amount: tx.amount,
-                outputs: tx.outputs
+                addresses: tx.addresses
               });
             }
 
@@ -371,13 +369,11 @@ class ConfirmationTracker {
       const archivedDocs = transactionsToArchive.map(tx => ({
         _id: tx._id,
         addresses: tx.addresses,
-        amount: tx.amount,
         block_height: tx.block_height,
         block_hash: tx.block_hash,
         final_confirmations: this.calculateConfirmations(tx.block_height, currentHeight),
         confirmed_at: tx.confirmed_at,
         first_seen: tx.first_seen,
-        outputs: tx.outputs,
         archived_at: new Date(),
         archive_height: currentHeight
       }));
@@ -417,10 +413,9 @@ class ConfirmationTracker {
 
       // Calculate totals for each address
       for (const tx of archivedTransactions) {
-        for (const deposit of tx.outputs || []) {
-          const current = addressUpdates.get(deposit.address) || { total: 0, count: 0 };
-          addressUpdates.set(deposit.address, {
-            total: current.total + deposit.amount,
+        for (const address of tx.addresses || []) {
+          const current = addressUpdates.get(address) || { count: 0 };
+          addressUpdates.set(address, {
             count: current.count + 1
           });
         }
@@ -432,7 +427,6 @@ class ConfirmationTracker {
           filter: { _id: address },
           update: {
             $inc: {
-              total_received: stats.total,
               transaction_count: stats.count
             }
           }
@@ -440,7 +434,7 @@ class ConfirmationTracker {
       }));
 
       if (bulkOps.length > 0) {
-        await this.db.depositAddresses.bulkWrite(bulkOps, { ordered: false });
+        await this.db.trackedAddresses.bulkWrite(bulkOps, { ordered: false });
       }
 
     } catch (error) {
@@ -555,9 +549,7 @@ class ConfirmationTracker {
               txid,
               threshold: 0,
               confirmations: 1,
-              addresses: tx.addresses,
-              amount: tx.amount,
-              outputs: tx.outputs
+              addresses: tx.addresses
             }]);
           }
 
@@ -681,8 +673,7 @@ class ConfirmationTracker {
             threshold: 0,
             confirmations: 1,
             addresses: tx.addresses,
-            amount: tx.amount,
-            outputs: tx.outputs
+            amount: tx.amount
           }]);
         }
       }
@@ -705,8 +696,7 @@ class ConfirmationTracker {
         {
           $group: {
             _id: '$status',
-            count: { $sum: 1 },
-            totalAmount: { $sum: '$amount' }
+            count: { $sum: 1 }
           }
         }
       ]).toArray();
@@ -720,8 +710,7 @@ class ConfirmationTracker {
             boundaries: [0, 1, 6, 12, 24, 72, 144, 288, Infinity],
             default: 'other',
             output: {
-              count: { $sum: 1 },
-              totalAmount: { $sum: '$amount' }
+              count: { $sum: 1 }
             }
           }
         }

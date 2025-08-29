@@ -76,38 +76,6 @@ class RPCClient {
     return this.makeRequest('getblockcount');
   }
 
-  // Get block hash by height
-  getBlockHash(height) {
-    return this.makeRequest('getblockhash', [height]);
-  }
-
-  // Get block data by hash
-  getBlock(hash, verbosity = 1) {
-    return this.makeRequest('getblock', [hash, verbosity]);
-  }
-
-  // Get block header by hash
-  getBlockHeader(hash, verbose = true) {
-    return this.makeRequest('getblockheader', [hash, verbose]);
-  }
-
-  // Get blockchain info
-  getBlockchainInfo() {
-    return this.makeRequest('getblockchaininfo');
-  }
-
-  // Get raw transaction
-  getRawTransaction(txid, verbose = false, blockHash = null) {
-    const params = [txid, verbose];
-    if (blockHash) {params.push(blockHash);}
-    return this.makeRequest('getrawtransaction', params);
-  }
-
-  // Get merkle proof for transaction
-  getMerkleProof(txid) {
-    return this.makeRequest('getmerkleproof', [txid]);
-  }
-
   // Test connection
   async ping() {
     try {
@@ -117,42 +85,6 @@ class RPCClient {
       this.logger.error('RPC ping failed', { error: error.message });
       return false;
     }
-  }
-
-  // Get network info
-  getNetworkInfo() {
-    return this.makeRequest('getnetworkinfo');
-  }
-
-  // Batch request for multiple blocks
-  async getMultipleBlocks(heights) {
-    try {
-      // Get all block hashes first
-      const hashPromises = heights.map(height => this.getBlockHash(height));
-      const hashes = await Promise.all(hashPromises);
-
-      // Then get all block data
-      const blockPromises = hashes.map((hash, index) =>
-        this.getBlock(hash, 1).then(block => ({ height: heights[index], ...block }))
-      );
-
-      return await Promise.all(blockPromises);
-    } catch (error) {
-      this.logger.error('Batch block request failed', {
-        heights,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  // Get block range (inclusive)
-  getBlockRange(startHeight, endHeight) {
-    const heights = [];
-    for (let height = startHeight; height <= endHeight; height++) {
-      heights.push(height);
-    }
-    return this.getMultipleBlocks(heights);
   }
 }
 

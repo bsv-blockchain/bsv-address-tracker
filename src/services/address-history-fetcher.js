@@ -1,14 +1,12 @@
 import winston from 'winston';
 import PQueue from 'p-queue';
 import WhatsOnChainClient from './whatsonchain-client.js';
-import BSVUtils from '../lib/bitcoin-utils.js';
 
 class AddressHistoryFetcher {
   constructor(mongodb, rpcClient) {
     this.db = mongodb;
     this.rpc = rpcClient;
     this.wocClient = new WhatsOnChainClient();
-    this.bsvUtils = new BSVUtils();
 
     this.logger = winston.createLogger({
       level: process.env.LOG_LEVEL || 'info',
@@ -21,10 +19,10 @@ class AddressHistoryFetcher {
 
     // Configuration
     this.config = {
-      batchSize: 20, // WhatsOnChain bulk limit
-      maxHistoryPerAddress: parseInt(process.env.MAX_HISTORY_PER_ADDRESS) || 10000,
+      batchSize: 20, // No longer used for bulk - kept for compatibility
+      maxHistoryPerAddress: parseInt(process.env.MAX_HISTORY_PER_ADDRESS) || 500, // Up to 500 transactions (5 pages)
       autoArchiveAfter: parseInt(process.env.AUTO_ARCHIVE_AFTER) || 288,
-      processingConcurrency: 1, // Process one batch at a time due to rate limits
+      processingConcurrency: 1, // Process one address at a time due to rate limits
       retryAttempts: 3,
       retryDelay: 5000 // 5 seconds
     };
@@ -56,7 +54,9 @@ class AddressHistoryFetcher {
 
     this.logger.info('Starting address history fetch', {
       addressCount: addresses.length,
-      batchSize: this.config.batchSize
+      batchSize: this.config.batchSize,
+      maxHistoryPerAddress: this.config.maxHistoryPerAddress,
+      addresses: addresses
     });
 
     try {
@@ -65,7 +65,8 @@ class AddressHistoryFetcher {
 
       const results = await this.wocClient.processBulkAddresses(
         addresses,
-        (historyData, batchAddresses) => this.processBatchHistory(historyData, batchAddresses)
+        (historyData, batchAddresses) => this.processBatchHistory(historyData, batchAddresses),
+        this.config.maxHistoryPerAddress
       );
 
       const summary = this.summarizeResults(results);
@@ -106,7 +107,14 @@ class AddressHistoryFetcher {
       errors: 0
     };
 
-    const currentHeight = this.blockTracker.lastProcessedHeight;
+    // Get current blockchain height from RPC
+    let currentHeight;
+    try {
+      currentHeight = await this.rpc.getBlockCount();
+    } catch (error) {
+      this.logger.error('Failed to get current block height', { error: error.message });
+      currentHeight = 0; // Fallback, transactions will be processed as unconfirmed
+    }
 
     for (const address of batchAddresses) {
       try {
@@ -115,6 +123,8 @@ class AddressHistoryFetcher {
         if (transactions.length === 0) {
           this.logger.debug('No history found for address', { address });
           batchResults.processed++;
+          // Still mark as fetched even if no history
+          await this.markAddressAsFetched(address);
           continue;
         }
 
@@ -128,6 +138,9 @@ class AddressHistoryFetcher {
         batchResults.processed++;
         batchResults.found += processedTxs.found;
         batchResults.archived += processedTxs.archived;
+
+        // Mark address as historically fetched
+        await this.markAddressAsFetched(address);
 
       } catch (error) {
         this.logger.error('Failed to process address history', {
@@ -231,60 +244,16 @@ class AddressHistoryFetcher {
   }
 
   /**
-   * Get detailed transaction information
+   * Get basic transaction information for tracking
    * @param {string} txid - Transaction ID
    * @param {string} address - Address being processed
    * @param {Object} basicTx - Basic transaction info from history
-   * @returns {Object|null} - Detailed transaction data
+   * @returns {Object|null} - Basic transaction data for tracking
    */
   async getTransactionDetails(txid, address, basicTx) {
     try {
-      // Try to get raw transaction hex for full parsing
-      let txHex = null;
-      let parsedTx = null;
-
-      try {
-        txHex = await this.wocClient.getRawTransaction(txid);
-        if (txHex) {
-          parsedTx = this.bsvUtils.parseTransaction(txHex);
-        }
-      } catch (error) {
-        this.logger.debug('Failed to get raw transaction, using basic data', {
-          txid,
-          error: error.message
-        });
-      }
-
-      // Calculate deposit amount for this address
-      let depositAmount = 0;
-      let outputIndex = -1;
-
-      if (parsedTx) {
-        // Use parsed transaction data
-        for (let i = 0; i < parsedTx.outputs.length; i++) {
-          const output = parsedTx.outputs[i];
-          if (output.address === address) {
-            depositAmount += output.value;
-            if (outputIndex === -1) {
-              outputIndex = i;
-            }
-          }
-        }
-      } else {
-        // Fall back to basic transaction data
-        depositAmount = basicTx.value || 0;
-      }
-
-      if (depositAmount === 0) {
-        this.logger.debug('No deposit found for address in transaction', {
-          txid,
-          address
-        });
-        return null;
-      }
-
-      // Get address info for user mapping
-      const addressInfo = await this.db.depositAddresses.findOne({ _id: address });
+      // Check if address exists in our tracked addresses
+      const addressInfo = await this.db.trackedAddresses.findOne({ _id: address });
       if (!addressInfo) {
         this.logger.warn('Address not found in database', { address });
         return null;
@@ -293,22 +262,14 @@ class AddressHistoryFetcher {
       const now = new Date();
       const confirmedAt = basicTx.height ? new Date(basicTx.time * 1000) : null;
 
+      // Only store essential tracking data - no amounts or raw transaction data
       return {
         _id: txid,
         addresses: [address],
-        amount: depositAmount,
         block_height: basicTx.height || null,
-        block_hash: null, // Will be filled by block tracker if needed
+        block_hash: null, // Will be filled by confirmation tracker if needed
         first_seen: now, // Historical, so first_seen = now
         confirmed_at: confirmedAt,
-        deposits: [{
-          address: address,
-          amount: depositAmount,
-          output_index: outputIndex,
-          user_id: addressInfo.user_id,
-          min_confirmations: addressInfo.metadata?.min_confirmations || 6
-        }],
-        raw_hex: txHex,
         created_at: now,
         is_historical: true
       };
@@ -331,9 +292,7 @@ class AddressHistoryFetcher {
    */
   async updateAddressStats(address, allTransactions, processResults) {
     try {
-      const totalReceived = allTransactions.reduce((sum, tx) => sum + (tx.value || 0), 0);
-
-      await this.db.depositAddresses.updateOne(
+      await this.db.trackedAddresses.updateOne(
         { _id: address },
         {
           $set: {
@@ -341,7 +300,6 @@ class AddressHistoryFetcher {
             history_fetched_at: new Date()
           },
           $inc: {
-            total_received: totalReceived,
             transaction_count: processResults.found
           }
         }
@@ -468,6 +426,75 @@ class AddressHistoryFetcher {
       return await this.wocClient.ping();
     } catch (error) {
       return false;
+    }
+  }
+
+  /**
+   * Mark an address as having completed historical fetch
+   * @param {string} address - Address to mark as fetched
+   */
+  async markAddressAsFetched(address) {
+    try {
+      await this.db.trackedAddresses.updateOne(
+        { _id: address },
+        {
+          $set: {
+            historical_fetched: true,
+            historical_fetched_at: new Date()
+          }
+        }
+      );
+    } catch (error) {
+      this.logger.error('Failed to mark address as fetched', {
+        address,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Get addresses that haven't had their historical data fetched
+   * @returns {string[]} - Array of addresses needing historical fetch
+   */
+  async getUnfetchedAddresses() {
+    try {
+      const unfetchedAddresses = await this.db.trackedAddresses.find({
+        active: true,
+        $or: [
+          { historical_fetched: { $ne: true } },
+          { historical_fetched: { $exists: false } }
+        ]
+      }, { projection: { _id: 1 } }).toArray();
+
+      return unfetchedAddresses.map(doc => doc._id);
+    } catch (error) {
+      this.logger.error('Failed to get unfetched addresses', { error: error.message });
+      return [];
+    }
+  }
+
+  /**
+   * Fetch historical data for any addresses that haven't been processed yet
+   * Called at startup to resume incomplete historical fetches
+   */
+  async fetchUnfetchedHistories() {
+    try {
+      const unfetchedAddresses = await this.getUnfetchedAddresses();
+
+      if (unfetchedAddresses.length === 0) {
+        this.logger.debug('All addresses have historical data fetched');
+        return { processed: 0, found: 0, archived: 0 };
+      }
+
+      this.logger.info('Fetching historical data for unfetched addresses', {
+        count: unfetchedAddresses.length,
+        addresses: unfetchedAddresses
+      });
+
+      return await this.fetchAddressHistories(unfetchedAddresses);
+    } catch (error) {
+      this.logger.error('Failed to fetch unfetched histories', { error: error.message });
+      return { processed: 0, found: 0, archived: 0 };
     }
   }
 }
