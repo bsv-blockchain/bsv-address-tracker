@@ -30,18 +30,17 @@
   },
   "dependencies": {
     "@bsv/sdk": "^1.6.24",
-    "bloom-filters": "^3.0.0",
-    "dotenv": "^16.3.0",
-    "fastify": "^4.24.0",
+    "dotenv": "^17.2.1",
+    "fastify": "^5.5.0",
     "mongodb": "^6.0.0",
-    "p-queue": "^7.3.0",
+    "p-queue": "^8.1.0",
     "winston": "^3.11.0",
-    "zeromq": "^6.0.0"
+    "zeromq": "^6.5.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
-    "eslint": "^8.0.0",
-    "jest": "^29.7.0",
+    "eslint": "^9.34.0",
+    "jest": "^30.1.1",
     "nodemon": "^3.0.0"
   }
 }

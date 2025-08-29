@@ -114,6 +114,18 @@ class RPCClient {
     return this.makeRequest('getblockcount');
   }
 
+  // Get transaction details with confirmations and block info
+  async getRawTransaction(txid, verbose = 1) {
+    try {
+      const result = await this.makeRequest('getrawtransaction', [txid, verbose]);
+      return result;
+    } catch (error) {
+      // Transaction might not exist or be in mempool
+      this.logger.debug('Failed to get raw transaction', { txid, error: error.message });
+      return null;
+    }
+  }
+
   // Test connection
   async ping() {
     try {

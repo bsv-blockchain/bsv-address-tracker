@@ -22,16 +22,15 @@ class ConfirmationTracker {
       batchSize: parseInt(process.env.CONFIRMATION_BATCH_SIZE) || 100,
       maxRetries: 3,
       rpcTimeout: 5000,
-      merkleProofConcurrency: parseInt(process.env.MERKLE_PROOF_CONCURRENCY) || 4, // Limit concurrent merkle proof requests
-      pendingTxLimit: 50, // Max pending transactions to verify per block
+      rpcConcurrency: parseInt(process.env.RPC_CONCURRENCY) || 4, // Limit concurrent RPC requests
       retryDelayMs: 30000 // 30 seconds before retrying failed transactions
     };
 
     // Processing queues
-    this.merkleProofQueue = new PQueue({
-      concurrency: this.config.merkleProofConcurrency,
+    this.rpcQueue = new PQueue({
+      concurrency: this.config.rpcConcurrency,
       interval: 200, // 200ms between batches to avoid overwhelming RPC
-      intervalCap: this.config.merkleProofConcurrency
+      intervalCap: this.config.rpcConcurrency
     });
 
     this.retryQueue = new Map(); // Map of txid -> retry info
@@ -39,8 +38,7 @@ class ConfirmationTracker {
 
     this.logger.info('Confirmation tracker initialized', {
       autoArchiveAfter: this.config.autoArchiveAfter,
-      merkleProofConcurrency: this.config.merkleProofConcurrency,
-      pendingTxLimit: this.config.pendingTxLimit
+      rpcConcurrency: this.config.rpcConcurrency
     });
   }
 
@@ -68,7 +66,7 @@ class ConfirmationTracker {
       this.logger.info('Processing confirmations for new block', {
         hash: blockData.hash,
         currentHeight,
-        queueSize: this.merkleProofQueue.size,
+        queueSize: this.rpcQueue.size,
         retryQueueSize: this.retryQueue.size
       });
 
@@ -87,7 +85,7 @@ class ConfirmationTracker {
         currentHeight,
         ...transactionStats,
         ...archiveStats,
-        queueSize: this.merkleProofQueue.size,
+        queueSize: this.rpcQueue.size,
         retryQueueSize: this.retryQueue.size,
         durationMs: duration
       });
@@ -105,20 +103,22 @@ class ConfirmationTracker {
   }
 
   /**
-   * Process all active transactions by verifying with merkle proofs
+   * Process all active transactions by verifying confirmations
    * @returns {Object} - Processing statistics
    */
   async processAllTransactions() {
     const enableVerboseLogging = process.env.CONFIRMATION_TRACKER_VERBOSE_LOGGING === 'true';
 
     try {
-      // Get ALL active transactions for merkle proof verification
+      // Get ALL active transactions for confirmation verification
       const allTxs = await this.db.activeTransactions.find({
         status: { $in: ['pending', 'confirming'] }
-      }).limit(this.config.pendingTxLimit).toArray();
+      }, {
+        projection: { _id: 1, status: 1, confirmations: 1 }
+      }).toArray();
 
       if (enableVerboseLogging) {
-        this.logger.debug('Found transactions to process for merkle proofs', {
+        this.logger.debug('Found transactions to process for confirmations', {
           totalFound: allTxs.length,
           transactions: allTxs.map(tx => ({
             txid: tx._id,
@@ -132,11 +132,11 @@ class ConfirmationTracker {
       let verifiedCount = 0;
       let failedCount = 0;
 
-      // Queue merkle proof verifications with rate limiting
+      // Queue RPC verifications with rate limiting
       const verificationPromises = allTxs.map(tx =>
-        this.merkleProofQueue.add(async () => {
+        this.rpcQueue.add(async () => {
           try {
-            const verified = await this.verifyTransactionWithMerkleProof(tx._id);
+            const verified = await this.verifyTransaction(tx._id);
             if (verified) {verifiedCount++;}
             return verified;
           } catch (error) {
@@ -185,14 +185,39 @@ class ConfirmationTracker {
    * @returns {Object} - Archival statistics
    */
   async checkAndArchiveTransactions(currentHeight) {
+    const enableVerboseLogging = process.env.CONFIRMATION_TRACKER_VERBOSE_LOGGING === 'true';
+
     try {
       let archivedCount = 0;
+      const maxBlockHeightForArchival = currentHeight - this.config.autoArchiveAfter + 1;
 
-      // Find transactions ready for archival
+      if (enableVerboseLogging) {
+        this.logger.debug('Checking for transactions to archive', {
+          currentHeight,
+          autoArchiveAfter: this.config.autoArchiveAfter,
+          maxBlockHeightForArchival
+        });
+      }
+
+      // Find transactions ready for archival (>= 144 confirmations)
+      // A transaction with block_height X has (currentHeight - X + 1) confirmations
+      // We want confirmations >= 144, so: currentHeight - block_height + 1 >= 144
+      // Therefore: block_height <= currentHeight - 144 + 1
       const transactionsToArchive = await this.db.activeTransactions.find({
-        block_height: { $ne: null, $lte: currentHeight - this.config.autoArchiveAfter + 1 },
+        block_height: { $ne: null, $lte: maxBlockHeightForArchival },
         status: 'confirming'
       }).toArray();
+
+      if (enableVerboseLogging) {
+        this.logger.debug('Found transactions for potential archival', {
+          count: transactionsToArchive.length,
+          transactions: transactionsToArchive.map(tx => ({
+            txid: tx._id,
+            blockHeight: tx.block_height,
+            confirmations: this.calculateConfirmations(tx.block_height, currentHeight)
+          }))
+        });
+      }
 
       if (transactionsToArchive.length === 0) {
         return { archivedCount: 0 };
@@ -212,6 +237,7 @@ class ConfirmationTracker {
         block_hash: tx.block_hash,
         final_confirmations: this.calculateConfirmations(tx.block_height, currentHeight),
         first_seen: tx.first_seen,
+        is_historical: tx.is_historical || false, // Default to false for ZMQ-detected transactions
         archived_at: new Date(),
         archive_height: currentHeight
       }));
@@ -281,132 +307,69 @@ class ConfirmationTracker {
   }
 
   /**
-   * Handle blockchain reorganization
-   * @param {Object} reorgData - Reorg information
-   */
-  async handleReorg(reorgData) {
-    try {
-      this.logger.warn('Processing blockchain reorganization', {
-        reorgFromHeight: reorgData.reorgFromHeight,
-        newHeight: reorgData.newHeight
-      });
-
-      // Find transactions affected by the reorg
-      const affectedTxs = await this.db.activeTransactions.find({
-        block_height: { $gt: reorgData.reorgFromHeight }
-      }).toArray();
-
-      if (affectedTxs.length === 0) {
-        this.logger.info('No active transactions affected by reorg');
-        return;
-      }
-
-      this.logger.info('Reprocessing affected transactions', {
-        count: affectedTxs.length,
-        fromHeight: reorgData.reorgFromHeight
-      });
-
-      // Reset transactions that were in orphaned blocks
-      const resetOps = affectedTxs.map(tx => ({
-        updateOne: {
-          filter: { _id: tx._id },
-          update: {
-            $set: {
-              block_height: null,
-              block_hash: null,
-              confirmations: 0,
-              status: 'pending'
-            }
-          }
-        }
-      }));
-
-      await this.db.activeTransactions.bulkWrite(resetOps, { ordered: false });
-
-      // Update confirmations based on new chain
-      await this.updateConfirmations(reorgData.newHeight);
-
-      this.logger.info('Reorg processing completed', {
-        resetTransactions: affectedTxs.length,
-        newHeight: reorgData.newHeight
-      });
-
-    } catch (error) {
-      this.logger.error('Failed to handle reorg', { error: error.message });
-      throw error;
-    }
-  }
-
-  /**
-   * Verify transaction using merkle proof and update block info with timeout and retry
+   * Verify transaction and get confirmation details
    * @param {string} txid - Transaction ID
    * @returns {boolean} - Whether verification was successful
    */
-  async verifyTransactionWithMerkleProof(txid) {
+  async verifyTransaction(txid) {
     const enableVerboseLogging = process.env.CONFIRMATION_TRACKER_VERBOSE_LOGGING === 'true';
 
     if (enableVerboseLogging) {
-      this.logger.debug('Verifying transaction with merkle proof', { txid });
+      this.logger.debug('Verifying transaction', { txid });
     }
 
     try {
-      // Use RPC timeout
+      // Get transaction details with verbosity 1
       if (enableVerboseLogging) {
-        this.logger.debug('Requesting merkle proof for transaction', { txid });
+        this.logger.debug('Requesting transaction details', { txid });
       }
-      const merkleProof = await this.rpc.makeRequest('getmerkleproof', [txid], this.config.rpcTimeout);
+      const txData = await this.rpc.getRawTransaction(txid, 1);
 
       if (enableVerboseLogging) {
-        this.logger.debug('Received merkle proof response', {
+        this.logger.debug('Received transaction response', {
           txid,
-          hasTarget: !!merkleProof?.target,
-          targetHash: merkleProof?.target?.hash,
-          targetHeight: merkleProof?.target?.height
+          hasBlockhash: !!txData?.blockhash,
+          confirmations: txData?.confirmations,
+          blockheight: txData?.blockheight
         });
       }
 
-      if (merkleProof && merkleProof.target && merkleProof.target.hash) {
+      if (txData && txData.blockhash) {
         if (enableVerboseLogging) {
-          this.logger.debug('Merkle proof received', {
+          this.logger.debug('Transaction confirmed', {
             txid,
-            blockHash: merkleProof.target.hash,
-            blockHeight: merkleProof.target.height,
-            proofLength: merkleProof.nodes ? merkleProof.nodes.length : 0
+            blockHash: txData.blockhash,
+            blockHeight: txData.blockheight,
+            confirmations: txData.confirmations,
+            blocktime: txData.blocktime
           });
         }
 
-        // We already have block info in the merkle proof target, no need for separate getblockheader call
-        const blockHash = merkleProof.target.hash;
-        const blockHeight = merkleProof.target.height;
+        // Extract block info from transaction data
+        const blockHash = txData.blockhash;
+        const blockHeight = txData.blockheight;
 
         if (enableVerboseLogging) {
-          this.logger.debug('Using block info from merkle proof', { blockHash, blockHeight });
+          this.logger.debug('Using block info from transaction', { blockHash, blockHeight });
         }
 
-        // Update transaction with merkle proof info
-        // For historical transactions that already have block_height, we only set block_hash
-        // For new transactions without block_height, we set everything
+        // Always update all fields since reorgs can happen
         const updateFields = {
           block_hash: blockHash,
-          merkle_proof: merkleProof,
-          last_verified: new Date()
+          block_height: blockHeight,
+          confirmations: txData.confirmations || 0,
+          block_time: txData.blocktime ? new Date(txData.blocktime * 1000) : null,
+          hex: txData.hex,
+          last_verified: new Date(),
+          status: txData.confirmations > 0 ? 'confirming' : 'pending'
         };
 
-        // Only set block_height and confirmations if not already set
-        const existingTx = await this.db.activeTransactions.findOne({ _id: txid });
-        if (existingTx && existingTx.block_height === null) {
-          updateFields.block_height = blockHeight;
-          updateFields.confirmations = 1;
-          updateFields.status = 'confirming';
-        }
-
         if (enableVerboseLogging) {
-          this.logger.debug('Updating transaction with merkle proof data', {
+          this.logger.debug('Updating transaction with confirmation data', {
             txid,
-            existingBlockHeight: existingTx ? existingTx.block_height : 'not found',
             updateFields: {
               ...updateFields,
-              merkle_proof: undefined // Don't log the full proof, too verbose
+              hex: undefined // Don't log the full hex, too verbose
             }
           });
         }
@@ -424,11 +387,11 @@ class ConfirmationTracker {
               modifiedCount: result.modifiedCount
             });
           }
-          this.logger.info('Transaction verified with merkle proof', {
+          this.logger.info('Transaction verified', {
             txid,
             blockHeight: blockHeight,
             blockHash: blockHash,
-            wasHistorical: existingTx && existingTx.block_height !== null
+            confirmations: txData.confirmations
           });
 
           // Remove from retry queue if present
@@ -443,26 +406,26 @@ class ConfirmationTracker {
               matchedCount: result.matchedCount
             });
           }
-          this.logger.warn('Transaction not found for merkle proof update', { txid });
+          this.logger.warn('Transaction not found for update', { txid });
         }
       } else {
         if (enableVerboseLogging) {
-          this.logger.debug('No valid merkle proof received', {
+          this.logger.debug('Transaction not confirmed yet', {
             txid,
-            merkleProof: merkleProof ? {
-              hasTarget: !!merkleProof.target,
-              targetHash: merkleProof.target?.hash
+            txData: txData ? {
+              hasBlockhash: !!txData.blockhash,
+              confirmations: txData.confirmations
             } : null
           });
         }
-        this.logger.debug('No merkle proof available for transaction', { txid });
+        this.logger.debug('Transaction not confirmed yet', { txid });
       }
 
       return false;
 
     } catch (error) {
       if (enableVerboseLogging) {
-        this.logger.debug('Merkle proof verification error details', {
+        this.logger.debug('Transaction verification error details', {
           txid,
           errorName: error.name,
           errorMessage: error.message,
@@ -474,7 +437,7 @@ class ConfirmationTracker {
       if (error.message.includes('timeout')) {
         this.logger.debug('RPC timeout verifying transaction', { txid });
       } else {
-        this.logger.debug('Transaction not yet confirmed or merkle proof unavailable', {
+        this.logger.debug('Transaction not yet confirmed or unavailable', {
           txid,
           error: error.message
         });
@@ -537,7 +500,7 @@ class ConfirmationTracker {
 
     for (const item of readyToRetry) {
       try {
-        const verified = await this.verifyTransactionWithMerkleProof(item.txid);
+        const verified = await this.verifyTransaction(item.txid);
         if (!verified) {
           this.addToRetryQueue(item.txid, 'Still not confirmed');
         }

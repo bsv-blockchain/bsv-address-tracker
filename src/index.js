@@ -152,10 +152,9 @@ class BSVAddressTracker {
       if (this.transactionTracker) {
         const stats = await this.transactionTracker.getStats();
         health.components.transactionTracker = {
-          healthy: stats.isInitialized && !stats.needsRebuild,
+          healthy: stats.isInitialized,
           isInitialized: stats.isInitialized,
-          addressCount: stats.bloomFilter ? stats.bloomFilter.addressCount : 0,
-          needsRebuild: stats.needsRebuild
+          addressCount: stats.filter ? stats.filter.addressCount : 0
         };
       }
 

@@ -1,6 +1,6 @@
 # BSV Address Tracker
 
-A demonstration of how to monitor Bitcoin SV addresses and track transaction lifecycles through the confirmation process. This system showcases real-time transaction detection, confirmation tracking via merkle proofs, and historical data integration.
+A demonstration of how to monitor Bitcoin SV addresses and track transaction lifecycles through the confirmation process. This system showcases real-time transaction detection, confirmation tracking via getrawtransaction, and historical data integration.
 
 **Purpose**: This is a educational/demonstration system that shows how to link transactions to addresses and track their confirmation journey. Other systems would handle transaction amounts, balances, and business logic.
 
@@ -9,8 +9,8 @@ A demonstration of how to monitor Bitcoin SV addresses and track transaction lif
 - **Real-time Transaction Detection** - Monitors incoming transactions via ZeroMQ feeds
 - **Address Management API** - RESTful API for adding/removing addresses to monitor  
 - **Transaction Lifecycle Tracking** - Tracks transactions from detection through final confirmation
-- **Merkle Proof Verification** - Uses merkle proofs for efficient confirmation validation
-- **Scalable Architecture** - Bloom filters for O(1) address pre-screening
+- **Transaction Verification** - Uses getrawtransaction for comprehensive confirmation details
+- **Scalable Architecture** - In-memory Set for O(1) address pre-screening with zero false positives
 - **Historical Data Integration** - Fetches transaction history from WhatsOnChain API
 - **Automatic Archival** - Archives fully confirmed transactions after 144+ confirmations
 - **Intelligent Retry Logic** - Handles failed operations with exponential backoff
@@ -20,7 +20,7 @@ A demonstration of how to monitor Bitcoin SV addresses and track transaction lif
 The system demonstrates a complete transaction lifecycle tracking pipeline:
 
 - **Transaction Tracker** - Detects transactions involving monitored addresses from ZMQ feeds
-- **Confirmation Tracker** - Tracks confirmation counts using merkle proofs (no raw transaction data needed)
+- **Confirmation Tracker** - Tracks confirmations using getrawtransaction (stores blockhash, height, time, and hex)
 - **Address History Fetcher** - Integrates historical transactions from WhatsOnChain API
 - **API Server** - RESTful interface for address management and transaction status queries
 - **ZMQ Listener** - Real-time blockchain event subscription from SV Node
@@ -192,7 +192,7 @@ This system demonstrates a complete transaction tracking workflow:
 
 4. **Confirmation Lifecycle**: As blocks are mined:
    - Transactions receive increasing confirmation counts as new blocks are added
-   - Merkle proofs verify confirmations without downloading full blocks
+   - getrawtransaction verifies confirmations and provides full transaction details
    - Transactions are archived after reaching 144+ confirmations
 
 5. **Efficient Operations**: 
@@ -203,8 +203,8 @@ This system demonstrates a complete transaction tracking workflow:
 
 ## Performance Optimizations
 
-- **Bloom Filters**: O(1) address screening with configurable false positive rate
-- **Merkle Proofs**: Lightweight transaction verification without downloading full blocks
+- **In-Memory Set**: O(1) address screening with zero false positives
+- **getrawtransaction**: Comprehensive transaction verification with blockhash, height, and time
 - **Comprehensive Updates**: Updates all tracked transactions efficiently on each new block
 - **Concurrent Processing**: Parallel processing of different confirmation tasks
 - **Rate Limiting**: Prevents overwhelming the SV Node with RPC requests
@@ -232,8 +232,8 @@ This is an educational demonstration focused on transaction lifecycle tracking. 
 - ✅ Real-time transaction detection for monitored addresses
 - ✅ Confirmation tracking through the blockchain lifecycle  
 - ✅ Historical transaction integration from external APIs
-- ✅ Efficient address monitoring with Bloom filters
-- ✅ Merkle proof verification for confirmations
+- ✅ Efficient address monitoring with in-memory Set
+- ✅ Transaction verification using getrawtransaction
 - ✅ Scalable architecture patterns for blockchain monitoring
 
 This system shows **how to link transactions to addresses and track their confirmation journey**. Production systems would extend this foundation with business logic, amount tracking, balance calculations, and application-specific features.
@@ -273,6 +273,6 @@ The system logs all important events. Monitor the logs for:
 
 ### High Memory Usage
 - Adjust `CONFIRMATION_BATCH_SIZE` for smaller batches
-- Reduce `pendingTxLimit` in confirmation tracker
+- Reduce RPC concurrency in confirmation tracker
 - Decrease `AUTO_ARCHIVE_AFTER` to archive transactions sooner
 

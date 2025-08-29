@@ -1,12 +1,12 @@
 import winston from 'winston';
-import AddressBloomFilter from '../lib/bloom-filter.js';
+import AddressFilter from '../lib/address-filter.js';
 import AddressExtractor from '../lib/address-extractor.js';
 
 class TransactionTracker {
   constructor(mongodb, addressHistoryFetcher = null) {
     this.db = mongodb;
     this.addressHistoryFetcher = addressHistoryFetcher;
-    this.bloomFilter = null;
+    this.addressFilter = null;
     this.addressExtractor = new AddressExtractor();
     this.isInitialized = false;
 
@@ -19,28 +19,22 @@ class TransactionTracker {
       transports: [new winston.transports.Console()]
     });
 
-    // Configuration
-    this.config = {
-      falsePositiveRate: parseFloat(process.env.BLOOM_FPR) || 0.001
-    };
+    // No configuration needed for Set-based filter
   }
 
   async initialize() {
     try {
       this.logger.info('Initializing transaction tracker');
 
-      // Initialize scalable bloom filter
-      this.bloomFilter = new AddressBloomFilter(
-        this.config.falsePositiveRate
-      );
+      // Initialize address filter
+      this.addressFilter = new AddressFilter();
 
-      // Load addresses into bloom filter
-      await this.loadAddressesIntoBloomFilter();
+      // Load addresses into filter from MongoDB
+      await this.addressFilter.loadAddressesFromMongo(this.db.db);
 
       this.isInitialized = true;
       this.logger.info('Transaction tracker initialized successfully', {
-        addressCount: this.bloomFilter.addressCount,
-        ...this.bloomFilter.getStats()
+        ...this.addressFilter.getStats()
       });
 
     } catch (error) {
@@ -49,59 +43,6 @@ class TransactionTracker {
     }
   }
 
-  async loadAddressesIntoBloomFilter() {
-    this.logger.info('Loading addresses into bloom filter');
-
-    const startTime = Date.now();
-    let totalLoaded = 0;
-    const batchSize = 10000;
-
-    try {
-      // Stream addresses from database in batches
-      const cursor = this.db.trackedAddresses.find(
-        { active: true },
-        { projection: { _id: 1 } }
-      );
-
-      let batch = [];
-
-      for await (const doc of cursor) {
-        batch.push(doc._id); // _id is the address
-
-        if (batch.length >= batchSize) {
-          this.bloomFilter.addAddresses(batch);
-          totalLoaded += batch.length;
-          batch = [];
-
-          // Log progress every 100k addresses
-          if (totalLoaded % 100000 === 0) {
-            this.logger.debug('Loading progress', {
-              addressesLoaded: totalLoaded,
-              durationMs: Date.now() - startTime
-            });
-          }
-        }
-      }
-
-      // Load remaining batch
-      if (batch.length > 0) {
-        this.bloomFilter.addAddresses(batch);
-        totalLoaded += batch.length;
-      }
-
-      const duration = Date.now() - startTime;
-
-      this.logger.info('Addresses loaded into bloom filter', {
-        totalLoaded,
-        durationMs: duration,
-        addressesPerSecond: Math.round(totalLoaded / (duration / 1000))
-      });
-
-    } catch (error) {
-      this.logger.error('Failed to load addresses into bloom filter', { error: error.message });
-      throw error;
-    }
-  }
 
   /**
    * Process a raw transaction and check if we're tracking any addresses in it
@@ -119,7 +60,7 @@ class TransactionTracker {
       const parsedTx = this.addressExtractor.extractAddressesFromTx(txHex, network);
 
       // Quick bloom filter pre-screening
-      const candidateAddresses = this.bloomFilter.filterAddresses(parsedTx.allAddresses);
+      const candidateAddresses = this.addressFilter.filterAddresses(parsedTx.allAddresses);
 
       if (candidateAddresses.length === 0) {
         // No possible matches, skip expensive database lookup
@@ -222,8 +163,7 @@ class TransactionTracker {
         block_hash: null,
         confirmations: 0,
         first_seen: now,
-        status: 'pending',
-        created_at: now
+        status: 'pending'
       };
 
       // Insert transaction record
@@ -263,7 +203,10 @@ class TransactionTracker {
         { _id: { $in: addresses } },
         {
           $set: { last_activity: timestamp },
-          $inc: { total_received: 0 } // Will be updated when confirmed
+          $inc: { 
+            transaction_count: 1, // Increment transaction count for each transaction
+            total_received: 0 // Will be updated when confirmed
+          }
         }
       );
     } catch (error) {
@@ -303,7 +246,7 @@ class TransactionTracker {
 
       // Add to bloom filter
       const newAddresses = addressDocs.map(doc => doc._id);
-      this.bloomFilter.addAddresses(newAddresses);
+      this.addressFilter.addAddresses(newAddresses);
 
       // Queue address history fetching for newly inserted addresses
       const insertedAddresses = result.insertedCount > 0 ?
@@ -335,7 +278,7 @@ class TransactionTracker {
         duplicates: addressData.length - result.insertedCount,
         historyQueuedFor: insertedAddresses.length,
         historyFetchPromise,
-        bloomFilterStats: this.bloomFilter.getStats()
+        filterStats: this.addressFilter.getStats()
       };
 
     } catch (error) {
@@ -367,40 +310,10 @@ class TransactionTracker {
         return acc;
       }, {}),
       activeTransactions: activeTransactionCount,
-      bloomFilter: this.bloomFilter ? this.bloomFilter.getStats() : null,
-      needsRebuild: this.bloomFilter ? this.bloomFilter.shouldRebuild() : false
+      filter: this.addressFilter ? this.addressFilter.getStats() : null
     };
   }
 
-  /**
-   * Rebuild bloom filter if false positive rate is too high
-   */
-  async rebuildBloomFilter() {
-    this.logger.info('Rebuilding bloom filter');
-
-    try {
-      const oldStats = this.bloomFilter.getStats();
-
-      // Initialize new scalable bloom filter
-      this.bloomFilter = new AddressBloomFilter(
-        this.config.falsePositiveRate
-      );
-
-      // Reload addresses
-      await this.loadAddressesIntoBloomFilter();
-
-      const newStats = this.bloomFilter.getStats();
-
-      this.logger.info('Bloom filter rebuilt', {
-        old: oldStats,
-        new: newStats
-      });
-
-    } catch (error) {
-      this.logger.error('Failed to rebuild bloom filter', { error: error.message });
-      throw error;
-    }
-  }
 }
 
 export default TransactionTracker;

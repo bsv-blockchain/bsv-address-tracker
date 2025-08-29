@@ -154,29 +154,6 @@ class MongoDB {
       return null;
     }
   }
-
-  // Clean up old/duplicate collections (utility method)
-  async cleanupLegacyCollections() {
-    const legacyNames = [
-      'blocks',               // No longer needed (using merkle proofs)
-      'tracked_addresses',    // Old name with underscore
-      'active_transactions',  // Old name with underscore
-      'archived_transactions', // Old name with underscore
-      'depositAddresses'      // Old deposit-specific name
-    ];
-
-    for (const name of legacyNames) {
-      try {
-        const exists = await this.db.listCollections({ name }).toArray();
-        if (exists.length > 0) {
-          await this.db.collection(name).drop();
-          this.logger.info(`Dropped legacy collection: ${name}`);
-        }
-      } catch (error) {
-        this.logger.debug(`Could not drop collection ${name}:`, error.message);
-      }
-    }
-  }
 }
 
 export default MongoDB;

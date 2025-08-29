@@ -268,7 +268,6 @@ class AddressHistoryFetcher {
         block_height: basicTx.height || null,
         block_hash: null, // Will be filled by confirmation tracker if needed
         first_seen: now, // Historical, so first_seen = now
-        created_at: now,
         is_historical: true
       };
 

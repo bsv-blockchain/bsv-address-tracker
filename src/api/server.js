@@ -108,9 +108,13 @@ class APIServer {
           }
         }
 
-        // Rebuild bloom filter to include new addresses
+        // Add new addresses to the in-memory filter
         if (results.length > 0 && this.transactionTracker) {
-          await this.transactionTracker.rebuildBloomFilter();
+          this.transactionTracker.addressFilter.addAddresses(results);
+          this.logger.info('Added addresses to in-memory filter', { 
+            addresses: results,
+            totalInFilter: this.transactionTracker.addressFilter.getStats().addressCount
+          });
         }
 
         // Fetch historical data for new addresses and forced refetches
@@ -260,9 +264,9 @@ class APIServer {
           });
         }
 
-        // Rebuild bloom filter to exclude deactivated address
-        if (this.transactionTracker) {
-          await this.transactionTracker.rebuildBloomFilter();
+        // Remove address from filter
+        if (this.transactionTracker && this.transactionTracker.addressFilter) {
+          this.transactionTracker.addressFilter.removeAddress(address);
         }
 
         this.logger.info('Address deactivated', { address });
