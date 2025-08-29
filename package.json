@@ -1,0 +1,46 @@
+{
+  "name": "bsv-address-tracker",
+  "version": "1.0.0",
+  "description": "Bitcoin SV address monitoring system for tracking deposits and confirmations",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest",
+    "test:unit": "jest --testMatch='**/tests/unit/**/*.test.js'",
+    "test:integration": "jest --testMatch='**/tests/integration/**/*.test.js'",
+    "lint": "eslint src/ scripts/",
+    "lint:fix": "eslint src/ scripts/ --fix",
+    "setup": "node scripts/setup.js",
+    "import-addresses": "node scripts/import-addresses.js"
+  },
+  "keywords": [
+    "bitcoin",
+    "bsv",
+    "blockchain",
+    "address-tracking",
+    "deposits",
+    "confirmations"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "zeromq": "^6.0.0",
+    "mongodb": "^6.0.0",
+    "bitcoinjs-lib": "^6.1.0",
+    "bloom-filters": "^3.0.0",
+    "fastify": "^4.24.0",
+    "winston": "^3.11.0",
+    "p-queue": "^7.3.0",
+    "dotenv": "^16.3.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0",
+    "jest": "^29.7.0",
+    "eslint": "^8.0.0",
+    "@eslint/js": "^9.0.0"
+  }
+}

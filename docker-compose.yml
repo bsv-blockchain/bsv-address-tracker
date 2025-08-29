@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:8
+    container_name: bsv-tracker-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: bsv_tracker
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - bsv-tracker
+
+  app:
+    build: .
+    container_name: bsv-tracker-app
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+    environment:
+      - NODE_ENV=development
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/bsv_tracker?authSource=admin
+      - MONGODB_DB_NAME=bsv_tracker
+      - LOG_LEVEL=debug
+      # SV Node connection - update these to point to your local node
+      - SVNODE_RPC_HOST=host.docker.internal
+      - SVNODE_RPC_PORT=8332
+      - SVNODE_RPC_USER=user
+      - SVNODE_RPC_PASSWORD=pass
+      - SVNODE_ZMQ_RAWTX=tcp://host.docker.internal:28332
+      - SVNODE_ZMQ_HASHBLOCK=tcp://host.docker.internal:28333
+      # Processing settings
+      - CONFIRMATION_THRESHOLDS=0,1,6,12,24,72,144,288
+      - AUTO_ARCHIVE_AFTER=288
+      - MAX_ACTIVE_TRANSACTIONS=10000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./src:/app/src:ro
+      - ./package.json:/app/package.json:ro
+    networks:
+      - bsv-tracker
+    # Only start if you want to run the app in docker
+    # For development, you'll likely run the app locally
+    profiles:
+      - full-stack
+
+volumes:
+  mongodb_data:
+    driver: local
+
+networks:
+  bsv-tracker:
+    driver: bridge
