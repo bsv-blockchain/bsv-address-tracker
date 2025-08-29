@@ -1,5 +1,5 @@
-const winston = require('winston');
-const PQueue = require('p-queue').default;
+import winston from 'winston';
+import PQueue from 'p-queue';
 
 class WhatsOnChainClient {
   constructor() {
@@ -418,4 +418,4 @@ class WhatsOnChainClient {
   }
 }
 
-module.exports = WhatsOnChainClient;
+export default WhatsOnChainClient;

@@ -1,5 +1,5 @@
-const { MongoClient } = require('mongodb');
-const winston = require('winston');
+import { MongoClient } from 'mongodb';
+import winston from 'winston';
 
 class MongoDB {
   constructor() {
@@ -39,7 +39,7 @@ class MongoDB {
 
   async setupCollections() {
     // Create collections if they don't exist
-    const collections = ['blocks', 'deposit_addresses', 'active_transactions', 'archived_transactions'];
+    const collections = ['trackedAddresses', 'activeTransactions', 'archivedTransactions'];
 
     for (const collectionName of collections) {
       try {
@@ -56,16 +56,8 @@ class MongoDB {
 
   async createIndexes() {
     try {
-      // Blocks collection indexes
-      await this.db.collection('blocks').createIndexes([
-        { key: { height: 1 }, name: 'height_1', unique: true },
-        { key: { hash: 1 }, name: 'hash_1', unique: true },
-        { key: { is_main_chain: 1 }, name: 'is_main_chain_1' },
-        { key: { height: 1, is_main_chain: 1 }, name: 'height_main_chain_1' }
-      ]);
-
       // Active transactions indexes
-      await this.db.collection('active_transactions').createIndexes([
+      await this.db.collection('activeTransactions').createIndexes([
         { key: { block_height: 1 }, name: 'block_height_1' },
         { key: { addresses: 1 }, name: 'addresses_1' },
         { key: { status: 1 }, name: 'status_1' },
@@ -73,10 +65,10 @@ class MongoDB {
         { key: { block_height: 1, status: 1 }, name: 'block_height_status_1' }
       ]);
 
-      // Deposit addresses indexes (natural _id index is sufficient for address lookups)
+      // Tracked addresses indexes (natural _id index is sufficient for address lookups)
 
       // Archived transactions indexes
-      await this.db.collection('archived_transactions').createIndexes([
+      await this.db.collection('archivedTransactions').createIndexes([
         { key: { address: 1 }, name: 'address_1' },
         { key: { archived_at: 1 }, name: 'archived_at_1' },
         { key: { block_height: 1 }, name: 'block_height_1' }
@@ -90,20 +82,16 @@ class MongoDB {
   }
 
   // Collection getters for easy access
-  get blocks() {
-    return this.db.collection('blocks');
-  }
-
-  get depositAddresses() {
-    return this.db.collection('deposit_addresses');
+  get trackedAddresses() {
+    return this.db.collection('trackedAddresses');
   }
 
   get activeTransactions() {
-    return this.db.collection('active_transactions');
+    return this.db.collection('activeTransactions');
   }
 
   get archivedTransactions() {
-    return this.db.collection('archived_transactions');
+    return this.db.collection('archivedTransactions');
   }
 
   async disconnect() {
@@ -141,4 +129,4 @@ class MongoDB {
   }
 }
 
-module.exports = MongoDB;
+export default MongoDB;

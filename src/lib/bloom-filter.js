@@ -1,10 +1,11 @@
-const { BloomFilter } = require('bloom-filters');
-const winston = require('winston');
+import pkg from 'bloom-filters';
+const { ScalableBloomFilter } = pkg;
+import winston from 'winston';
 
 class AddressBloomFilter {
-  constructor(expectedElements = 1000000, falsePositiveRate = 0.001) {
-    this.expectedElements = expectedElements;
+  constructor(falsePositiveRate = 0.001, initialCapacity = 1000) {
     this.falsePositiveRate = falsePositiveRate;
+    this.initialCapacity = initialCapacity;
     this.filter = null;
     this.addressCount = 0;
 
@@ -21,14 +22,13 @@ class AddressBloomFilter {
   }
 
   initialize() {
-    // Create a new Bloom filter optimized for the expected number of addresses
-    this.filter = new BloomFilter(this.expectedElements, this.falsePositiveRate);
+    // Always use scalable bloom filter for dynamic address sets
+    this.filter = new ScalableBloomFilter(this.initialCapacity, this.falsePositiveRate);
     this.addressCount = 0;
 
-    this.logger.info('Bloom filter initialized', {
-      expectedElements: this.expectedElements,
-      falsePositiveRate: this.falsePositiveRate,
-      estimatedMemory: `${Math.round(this.filter.bitArray.length / 8 / 1024)} KB`
+    this.logger.info('Scalable bloom filter initialized', {
+      initialCapacity: this.initialCapacity,
+      falsePositiveRate: this.falsePositiveRate
     });
   }
 
@@ -115,30 +115,13 @@ class AddressBloomFilter {
    * Get statistics about the bloom filter
    */
   getStats() {
-    const bitArray = this.filter.bitArray;
-    const bitsSet = bitArray.reduce((count, byte) => {
-      // Count bits set in each byte
-      let bits = 0;
-      let value = byte;
-      while (value) {
-        bits += value & 1;
-        value >>= 1;
-      }
-      return count + bits;
-    }, 0);
-
-    const fillRatio = bitsSet / (bitArray.length * 8);
-    const currentFalsePositiveRate = Math.pow(fillRatio, this.filter.hashFunctions);
-
     return {
       addressCount: this.addressCount,
-      expectedElements: this.expectedElements,
+      initialCapacity: this.initialCapacity,
       targetFalsePositiveRate: this.falsePositiveRate,
-      currentFalsePositiveRate: currentFalsePositiveRate.toExponential(3),
-      fillRatio: (fillRatio * 100).toFixed(2) + '%',
-      memoryUsageKB: Math.round(bitArray.length / 8 / 1024),
-      hashFunctions: this.filter.hashFunctions,
-      bitsPerElement: Math.round((bitArray.length * 8) / this.addressCount) || 0
+      currentFalsePositiveRate: this.filter.rate(),
+      capacity: this.filter.capacity(),
+      filterType: 'scalable'
     };
   }
 
@@ -148,11 +131,10 @@ class AddressBloomFilter {
    */
   export() {
     return {
-      expectedElements: this.expectedElements,
       falsePositiveRate: this.falsePositiveRate,
+      initialCapacity: this.initialCapacity,
       addressCount: this.addressCount,
-      bitArray: Array.from(this.filter.bitArray),
-      hashFunctions: this.filter.hashFunctions,
+      filterData: this.filter.saveAsJSON ? this.filter.saveAsJSON() : null,
       exportedAt: new Date()
     };
   }
@@ -166,19 +148,21 @@ class AddressBloomFilter {
       throw new Error('Invalid filter state for import');
     }
 
-    this.expectedElements = state.expectedElements;
     this.falsePositiveRate = state.falsePositiveRate;
+    this.initialCapacity = state.initialCapacity || 1000;
     this.addressCount = state.addressCount;
 
-    // Reconstruct the bloom filter
-    this.filter = new BloomFilter(this.expectedElements, this.falsePositiveRate);
-
-    if (state.bitArray && Array.isArray(state.bitArray)) {
-      this.filter.bitArray = new Uint8Array(state.bitArray);
+    // Import scalable filter
+    if (state.filterData && ScalableBloomFilter.fromJSON) {
+      this.filter = ScalableBloomFilter.fromJSON(state.filterData);
+    } else {
+      // Fallback: create new scalable filter
+      this.filter = new ScalableBloomFilter(this.initialCapacity, this.falsePositiveRate);
     }
 
-    this.logger.info('Bloom filter imported from state', {
+    this.logger.info('Scalable bloom filter imported from state', {
       addressCount: this.addressCount,
+      initialCapacity: this.initialCapacity,
       importedAt: new Date(),
       originalExportDate: state.exportedAt
     });
@@ -197,35 +181,23 @@ class AddressBloomFilter {
    * @returns {boolean} - true if rebuild is recommended
    */
   shouldRebuild() {
-    const stats = this.getStats();
-    const currentFP = parseFloat(stats.currentFalsePositiveRate);
-
-    // Rebuild if current false positive rate is 10x higher than target
-    return currentFP > (this.falsePositiveRate * 10);
+    // Scalable filters auto-manage their FPR, rarely need rebuilds
+    const currentRate = this.filter.rate();
+    return currentRate > (this.falsePositiveRate * 5);
   }
 
   /**
-   * Estimate optimal parameters for a given number of addresses
-   * @param {number} numAddresses - Expected number of addresses
+   * Get scalable bloom filter parameters
    * @param {number} targetFPR - Target false positive rate (default: 0.001)
-   * @returns {Object} - Optimal parameters
+   * @param {number} initialCapacity - Initial capacity (default: 1000)
+   * @returns {Object} - Parameters for scalable filter
    */
-  static getOptimalParameters(numAddresses, targetFPR = 0.001) {
-    // Optimal number of hash functions: k = (m/n) * ln(2)
-    // Optimal number of bits: m = -(n * ln(p)) / (ln(2)^2)
-
-    const optimalBits = Math.ceil(-(numAddresses * Math.log(targetFPR)) / (Math.log(2) ** 2));
-    const optimalHashFunctions = Math.ceil((optimalBits / numAddresses) * Math.log(2));
-    const memoryKB = Math.ceil(optimalBits / 8 / 1024);
-
+  static getOptimalParameters(targetFPR = 0.001, initialCapacity = 1000) {
     return {
-      expectedElements: numAddresses,
       falsePositiveRate: targetFPR,
-      optimalBits,
-      optimalHashFunctions,
-      estimatedMemoryKB: memoryKB
+      initialCapacity: initialCapacity
     };
   }
 }
 
-module.exports = AddressBloomFilter;
+export default AddressBloomFilter;

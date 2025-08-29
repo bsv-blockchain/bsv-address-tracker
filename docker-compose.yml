@@ -38,7 +38,6 @@ services:
       # Processing settings
       - CONFIRMATION_THRESHOLDS=0,1,6,12,24,72,144,288
       - AUTO_ARCHIVE_AFTER=288
-      - MAX_ACTIVE_TRANSACTIONS=10000
     ports:
       - "3000:3000"
     volumes:

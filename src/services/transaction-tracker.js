@@ -1,8 +1,8 @@
-const winston = require('winston');
-const AddressBloomFilter = require('../lib/bloom-filter');
-const BSVUtils = require('../lib/bitcoin-utils');
+import winston from 'winston';
+import AddressBloomFilter from '../lib/bloom-filter.js';
+import BSVUtils from '../lib/bitcoin-utils.js';
 
-class DepositDetector {
+class TransactionTracker {
   constructor(mongodb, addressHistoryFetcher = null) {
     this.db = mongodb;
     this.addressHistoryFetcher = addressHistoryFetcher;
@@ -21,39 +21,30 @@ class DepositDetector {
 
     // Configuration
     this.config = {
-      expectedAddresses: parseInt(process.env.EXPECTED_ADDRESSES) || 1000000,
-      falsePositiveRate: parseFloat(process.env.BLOOM_FPR) || 0.001,
-      minDepositAmount: parseInt(process.env.MIN_DEPOSIT_AMOUNT) || 1000, // satoshis
-      rebuildThreshold: 0.01 // Rebuild if FPR exceeds 1%
+      falsePositiveRate: parseFloat(process.env.BLOOM_FPR) || 0.001
     };
   }
 
   async initialize() {
     try {
-      this.logger.info('Initializing deposit detector');
+      this.logger.info('Initializing transaction tracker');
 
-      // Initialize bloom filter with optimal parameters
-      const params = AddressBloomFilter.getOptimalParameters(
-        this.config.expectedAddresses,
-        this.config.falsePositiveRate
-      );
-
+      // Initialize scalable bloom filter
       this.bloomFilter = new AddressBloomFilter(
-        params.expectedElements,
-        params.falsePositiveRate
+        this.config.falsePositiveRate
       );
 
       // Load addresses into bloom filter
       await this.loadAddressesIntoBloomFilter();
 
       this.isInitialized = true;
-      this.logger.info('Deposit detector initialized successfully', {
+      this.logger.info('Transaction tracker initialized successfully', {
         addressCount: this.bloomFilter.addressCount,
         ...this.bloomFilter.getStats()
       });
 
     } catch (error) {
-      this.logger.error('Failed to initialize deposit detector', { error: error.message });
+      this.logger.error('Failed to initialize transaction tracker', { error: error.message });
       throw error;
     }
   }
@@ -67,7 +58,7 @@ class DepositDetector {
 
     try {
       // Stream addresses from database in batches
-      const cursor = this.db.depositAddresses.find(
+      const cursor = this.db.trackedAddresses.find(
         { status: 'active' },
         { projection: { _id: 1 } }
       );
@@ -113,13 +104,13 @@ class DepositDetector {
   }
 
   /**
-   * Process a raw transaction and detect deposits
+   * Process a raw transaction and check if we're tracking any addresses in it
    * @param {string} txHex - Raw transaction hex
-   * @returns {Object|null} - Deposit information or null if no deposits
+   * @returns {Object|null} - Transaction information or null if not tracking any addresses
    */
   async processTransaction(txHex) {
     if (!this.isInitialized) {
-      throw new Error('Deposit detector not initialized');
+      throw new Error('Transaction tracker not initialized');
     }
 
     try {
@@ -134,10 +125,10 @@ class DepositDetector {
         return null;
       }
 
-      // Verify actual deposits with database lookup
-      const deposits = await this.verifyDeposits(parsedTx, candidateAddresses);
+      // Verify which addresses we're actually tracking
+      const trackedOutputs = await this.verifyTrackedAddresses(parsedTx, candidateAddresses);
 
-      if (deposits.length === 0) {
+      if (trackedOutputs.length === 0) {
         // False positive from bloom filter
         this.logger.debug('Bloom filter false positive', {
           txid: parsedTx.txid,
@@ -146,20 +137,20 @@ class DepositDetector {
         return null;
       }
 
-      // Record the deposits
-      const depositRecord = await this.recordDeposits(parsedTx, deposits);
+      // Record the transaction
+      const transactionRecord = await this.recordTransaction(parsedTx, trackedOutputs);
 
-      this.logger.info('Deposits detected', {
+      this.logger.info('Transaction tracked', {
         txid: parsedTx.txid,
-        depositCount: deposits.length,
-        totalAmount: deposits.reduce((sum, d) => sum + d.amount, 0),
-        addresses: deposits.map(d => d.address)
+        outputCount: trackedOutputs.length,
+        totalAmount: trackedOutputs.reduce((sum, o) => sum + o.amount, 0),
+        addresses: trackedOutputs.map(o => o.address)
       });
 
-      return depositRecord;
+      return transactionRecord;
 
     } catch (error) {
-      this.logger.error('Failed to process transaction for deposits', {
+      this.logger.error('Failed to process transaction', {
         error: error.message,
         txHex: txHex.substring(0, 100) + '...'
       });
@@ -171,52 +162,41 @@ class DepositDetector {
    * Verify which candidate addresses are actually being tracked
    * @param {Object} parsedTx - Parsed transaction
    * @param {string[]} candidateAddresses - Addresses that passed bloom filter
-   * @returns {Array} - Verified deposit information
+   * @returns {Array} - Verified tracked outputs
    */
-  async verifyDeposits(parsedTx, candidateAddresses) {
+  async verifyTrackedAddresses(parsedTx, candidateAddresses) {
     try {
       // Look up which addresses are actually in our database
-      const trackedAddresses = await this.db.depositAddresses.find(
+      const trackedAddresses = await this.db.trackedAddresses.find(
         {
           _id: { $in: candidateAddresses },
           status: 'active'
         },
-        { projection: { _id: 1, user_id: 1, min_confirmations: 1 } }
+        { projection: { _id: 1, user_id: 1, metadata: 1 } }
       ).toArray();
 
       const trackedMap = new Map(trackedAddresses.map(addr => [addr._id, addr]));
-      const deposits = [];
+      const trackedOutputs = [];
 
-      // Check each output for deposits
+      // Check each output for tracked addresses
       for (const output of parsedTx.outputs) {
         if (output.address && trackedMap.has(output.address)) {
           const addressInfo = trackedMap.get(output.address);
 
-          // Apply minimum deposit amount filter
-          if (output.value >= this.config.minDepositAmount) {
-            deposits.push({
-              address: output.address,
-              amount: output.value,
-              outputIndex: output.index,
-              userId: addressInfo.user_id,
-              minConfirmations: addressInfo.min_confirmations || 6,
-              scriptType: output.type
-            });
-          } else {
-            this.logger.debug('Deposit below minimum threshold', {
-              txid: parsedTx.txid,
-              address: output.address,
-              amount: output.value,
-              minimum: this.config.minDepositAmount
-            });
-          }
+          trackedOutputs.push({
+            address: output.address,
+            amount: output.value,
+            outputIndex: output.index,
+            userId: addressInfo.user_id,
+            scriptType: output.type
+          });
         }
       }
 
-      return deposits;
+      return trackedOutputs;
 
     } catch (error) {
-      this.logger.error('Failed to verify deposits', {
+      this.logger.error('Failed to verify tracked addresses', {
         error: error.message,
         txid: parsedTx.txid,
         candidateAddresses
@@ -226,32 +206,31 @@ class DepositDetector {
   }
 
   /**
-   * Record deposits to the database
+   * Record transaction to the database
    * @param {Object} parsedTx - Parsed transaction
-   * @param {Array} deposits - Verified deposits
+   * @param {Array} trackedOutputs - Verified tracked outputs
    * @returns {Object} - Recorded transaction info
    */
-  async recordDeposits(parsedTx, deposits) {
+  async recordTransaction(parsedTx, trackedOutputs) {
     try {
       const now = new Date();
 
       // Prepare transaction record
       const transactionRecord = {
         _id: parsedTx.txid,
-        addresses: deposits.map(d => d.address),
-        amount: deposits.reduce((sum, d) => sum + d.amount, 0),
+        addresses: trackedOutputs.map(o => o.address),
+        amount: trackedOutputs.reduce((sum, o) => sum + o.amount, 0),
         block_height: null, // Will be set when confirmed
         block_hash: null,
         confirmations: 0,
         first_seen: now,
         confirmed_at: null,
         status: 'pending',
-        deposits: deposits.map(d => ({
-          address: d.address,
-          amount: d.amount,
-          output_index: d.outputIndex,
-          user_id: d.userId,
-          min_confirmations: d.minConfirmations
+        outputs: trackedOutputs.map(o => ({
+          address: o.address,
+          amount: o.amount,
+          output_index: o.outputIndex,
+          user_id: o.userId
         })),
         raw_hex: parsedTx.hex,
         created_at: now
@@ -265,18 +244,18 @@ class DepositDetector {
       );
 
       // Update address last activity
-      await this.updateAddressActivity(deposits.map(d => d.address), now);
+      await this.updateAddressActivity(trackedOutputs.map(o => o.address), now);
 
       return {
         txid: parsedTx.txid,
-        deposits: deposits.length,
+        outputs: trackedOutputs.length,
         totalAmount: transactionRecord.amount,
         addresses: transactionRecord.addresses,
         status: 'recorded'
       };
 
     } catch (error) {
-      this.logger.error('Failed to record deposits', {
+      this.logger.error('Failed to record transaction', {
         error: error.message,
         txid: parsedTx.txid
       });
@@ -291,7 +270,7 @@ class DepositDetector {
    */
   async updateAddressActivity(addresses, timestamp) {
     try {
-      await this.db.depositAddresses.updateMany(
+      await this.db.trackedAddresses.updateMany(
         { _id: { $in: addresses } },
         {
           $set: { last_activity: timestamp },
@@ -328,7 +307,7 @@ class DepositDetector {
       }));
 
       // Insert addresses
-      const result = await this.db.depositAddresses.insertMany(
+      const result = await this.db.trackedAddresses.insertMany(
         addressDocs,
         { ordered: false } // Continue on duplicates
       );
@@ -377,10 +356,10 @@ class DepositDetector {
   }
 
   /**
-   * Get deposit detector statistics
+   * Get transaction tracker statistics
    */
   async getStats() {
-    const dbStats = await this.db.depositAddresses.aggregate([
+    const dbStats = await this.db.trackedAddresses.aggregate([
       {
         $group: {
           _id: '$status',
@@ -413,15 +392,9 @@ class DepositDetector {
     try {
       const oldStats = this.bloomFilter.getStats();
 
-      // Initialize new bloom filter
-      const params = AddressBloomFilter.getOptimalParameters(
-        this.config.expectedAddresses,
-        this.config.falsePositiveRate
-      );
-
+      // Initialize new scalable bloom filter
       this.bloomFilter = new AddressBloomFilter(
-        params.expectedElements,
-        params.falsePositiveRate
+        this.config.falsePositiveRate
       );
 
       // Reload addresses
@@ -441,4 +414,4 @@ class DepositDetector {
   }
 }
 
-module.exports = DepositDetector;
+export default TransactionTracker;

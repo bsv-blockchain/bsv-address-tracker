@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Bitcoin SV address monitoring system for tracking deposits and confirmations",
   "main": "src/index.js",
+  "type": "module",
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",

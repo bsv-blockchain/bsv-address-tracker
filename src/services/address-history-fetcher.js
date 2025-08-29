@@ -1,12 +1,12 @@
-const winston = require('winston');
-const PQueue = require('p-queue').default;
-const WhatsOnChainClient = require('./whatsonchain-client');
-const BSVUtils = require('../lib/bitcoin-utils');
+import winston from 'winston';
+import PQueue from 'p-queue';
+import WhatsOnChainClient from './whatsonchain-client.js';
+import BSVUtils from '../lib/bitcoin-utils.js';
 
 class AddressHistoryFetcher {
-  constructor(mongodb, blockTracker) {
+  constructor(mongodb, rpcClient) {
     this.db = mongodb;
-    this.blockTracker = blockTracker;
+    this.rpc = rpcClient;
     this.wocClient = new WhatsOnChainClient();
     this.bsvUtils = new BSVUtils();
 
@@ -472,4 +472,4 @@ class AddressHistoryFetcher {
   }
 }
 
-module.exports = AddressHistoryFetcher;
+export default AddressHistoryFetcher;

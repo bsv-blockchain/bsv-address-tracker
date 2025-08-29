@@ -1,14 +1,14 @@
-require('dotenv').config();
-const winston = require('winston');
+import 'dotenv/config';
+import winston from 'winston';
 
 // Import services
-const MongoDB = require('./db/mongodb');
-const RPCClient = require('./services/rpc-client');
-const BlockTracker = require('./services/block-tracker');
-const ZMQListener = require('./services/zmq-listener');
-const DepositDetector = require('./services/deposit-detector');
-const ConfirmationTracker = require('./services/confirmation-tracker');
-const AddressHistoryFetcher = require('./services/address-history-fetcher');
+import MongoDB from './db/mongodb.js';
+import RPCClient from './services/rpc-client.js';
+import ZMQListener from './services/zmq-listener.js';
+import TransactionTracker from './services/transaction-tracker.js';
+import ConfirmationTracker from './services/confirmation-tracker.js';
+import AddressHistoryFetcher from './services/address-history-fetcher.js';
+import APIServer from './api/server.js';
 
 class BSVAddressTracker {
   constructor() {
@@ -23,11 +23,11 @@ class BSVAddressTracker {
 
     this.db = null;
     this.rpc = null;
-    this.blockTracker = null;
     this.zmqListener = null;
-    this.depositDetector = null;
+    this.transactionTracker = null;
     this.confirmationTracker = null;
     this.addressHistoryFetcher = null;
+    this.apiServer = null;
     this.isRunning = false;
   }
 
@@ -50,29 +50,37 @@ class BSVAddressTracker {
 
       this.logger.info('Connected to SV Node');
 
-      // Initialize block tracker first (needed for history fetcher)
-      this.blockTracker = new BlockTracker(this.db, this.rpc);
-      await this.blockTracker.initialize();
-
       // Initialize address history fetcher
-      this.addressHistoryFetcher = new AddressHistoryFetcher(this.db, this.blockTracker);
+      this.addressHistoryFetcher = new AddressHistoryFetcher(this.db, this.rpc);
 
-      // Initialize deposit detector with history fetcher
-      this.depositDetector = new DepositDetector(this.db, this.addressHistoryFetcher);
-      await this.depositDetector.initialize();
+      // Initialize transaction tracker with history fetcher
+      this.transactionTracker = new TransactionTracker(this.db, this.addressHistoryFetcher);
+      await this.transactionTracker.initialize();
 
       // Initialize confirmation tracker
-      this.confirmationTracker = new ConfirmationTracker(this.db, this.blockTracker);
-
-      // Set up block tracker event handling for confirmation updates
-      this.setupBlockTrackerEvents();
+      this.confirmationTracker = new ConfirmationTracker(this.db, this.rpc);
 
       // Initialize ZMQ listener
-      this.zmqListener = new ZMQListener(this.blockTracker, this.depositDetector);
+      this.zmqListener = new ZMQListener(this.confirmationTracker, this.transactionTracker);
       await this.zmqListener.start();
 
+      // Initialize API server
+      this.apiServer = new APIServer(
+        this.db, 
+        this.transactionTracker, 
+        this.confirmationTracker, 
+        this.addressHistoryFetcher
+      );
+      
+      const apiPort = parseInt(process.env.API_PORT) || 3000;
+      const apiHost = process.env.API_HOST || '0.0.0.0';
+      await this.apiServer.start(apiPort, apiHost);
+
       this.isRunning = true;
-      this.logger.info('BSV Address Tracker started successfully');
+      this.logger.info('BSV Address Tracker started successfully', {
+        apiPort,
+        apiHost
+      });
 
       // Setup health monitoring
       this.setupHealthMonitoring();
@@ -89,37 +97,6 @@ class BSVAddressTracker {
     }
   }
 
-  setupBlockTrackerEvents() {
-    // Set up event handling for block tracker events
-    // Note: In a full implementation, this would use EventEmitter
-    // For now, we'll manually call confirmation tracker methods
-
-    // Override the block tracker's emit method to handle events
-    const originalEmit = this.blockTracker.emit;
-    this.blockTracker.emit = (event, data) => {
-      originalEmit.call(this.blockTracker, event, data);
-
-      if (event === 'newBlock' && this.confirmationTracker) {
-        // Process confirmations for new block
-        this.confirmationTracker.processNewBlock(data).catch(error => {
-          this.logger.error('Failed to process confirmations for new block', {
-            height: data.height,
-            error: error.message
-          });
-        });
-      }
-
-      if (event === 'reorg' && this.confirmationTracker) {
-        // Handle blockchain reorganization
-        this.confirmationTracker.handleReorg(data).catch(error => {
-          this.logger.error('Failed to handle reorg in confirmation tracker', {
-            reorgFromHeight: data.reorgFromHeight,
-            error: error.message
-          });
-        });
-      }
-    };
-  }
 
   setupHealthMonitoring() {
     // Monitor system health every 30 seconds
@@ -156,21 +133,11 @@ class BSVAddressTracker {
       // ZMQ health
       health.components.zmq = this.zmqListener.isHealthy();
 
-      // Block tracker health
-      if (this.blockTracker) {
-        const stats = await this.blockTracker.getStats();
-        health.components.blockTracker = {
-          healthy: !stats.isProcessing || stats.lastProcessedHeight !== null,
-          lastHeight: stats.lastProcessedHeight,
-          mainChainBlocks: stats.mainChainBlocks,
-          orphanedBlocks: stats.orphanedBlocks
-        };
-      }
 
-      // Deposit detector health
-      if (this.depositDetector) {
-        const stats = await this.depositDetector.getStats();
-        health.components.depositDetector = {
+      // Transaction tracker health
+      if (this.transactionTracker) {
+        const stats = await this.transactionTracker.getStats();
+        health.components.transactionTracker = {
           healthy: stats.isInitialized && !stats.needsRebuild,
           isInitialized: stats.isInitialized,
           addressCount: stats.bloomFilter ? stats.bloomFilter.addressCount : 0,
@@ -249,6 +216,11 @@ class BSVAddressTracker {
         clearInterval(this.healthInterval);
       }
 
+      // Stop API server
+      if (this.apiServer) {
+        await this.apiServer.stop();
+      }
+
       // Stop ZMQ listener
       if (this.zmqListener) {
         await this.zmqListener.stop();
@@ -279,16 +251,13 @@ class BSVAddressTracker {
       stats.database = await this.db.getStats();
     }
 
-    if (this.blockTracker) {
-      stats.blockTracker = await this.blockTracker.getStats();
-    }
 
     if (this.zmqListener) {
       stats.zmq = this.zmqListener.getStats();
     }
 
-    if (this.depositDetector) {
-      stats.depositDetector = await this.depositDetector.getStats();
+    if (this.transactionTracker) {
+      stats.transactionTracker = await this.transactionTracker.getStats();
     }
 
     if (this.confirmationTracker) {
@@ -304,7 +273,7 @@ class BSVAddressTracker {
 }
 
 // Start the application if this file is run directly
-if (require.main === module) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   const tracker = new BSVAddressTracker();
   tracker.start().catch(error => {
     console.error('Failed to start application:', error);
@@ -312,4 +281,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = BSVAddressTracker;
+export default BSVAddressTracker;

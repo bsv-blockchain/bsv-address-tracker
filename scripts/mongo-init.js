@@ -20,7 +20,7 @@ db.createUser({
 
 // Create collections (optional, they'll be created automatically)
 db.createCollection('blocks');
-db.createCollection('deposit_addresses');
+db.createCollection('tracked_addresses');
 db.createCollection('active_transactions');
 db.createCollection('archived_transactions');
 

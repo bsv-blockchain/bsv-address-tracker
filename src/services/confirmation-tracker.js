@@ -1,9 +1,10 @@
-const winston = require('winston');
+import winston from 'winston';
+import PQueue from 'p-queue';
 
 class ConfirmationTracker {
-  constructor(mongodb, blockTracker) {
+  constructor(mongodb, rpcClient) {
     this.db = mongodb;
-    this.blockTracker = blockTracker;
+    this.rpc = rpcClient;
     this.isProcessing = false;
 
     this.logger = winston.createLogger({
@@ -19,13 +20,29 @@ class ConfirmationTracker {
     this.config = {
       confirmationThresholds: this.parseThresholds(process.env.CONFIRMATION_THRESHOLDS),
       autoArchiveAfter: parseInt(process.env.AUTO_ARCHIVE_AFTER) || 288,
-      batchSize: parseInt(process.env.CONFIRMATION_BATCH_SIZE) || 1000,
-      maxRetries: 3
+      batchSize: parseInt(process.env.CONFIRMATION_BATCH_SIZE) || 100,
+      maxRetries: 3,
+      rpcTimeout: 5000,
+      merkleProofConcurrency: 5, // Limit concurrent merkle proof requests
+      pendingTxLimit: 50, // Max pending transactions to verify per block
+      retryDelayMs: 30000 // 30 seconds before retrying failed transactions
     };
+
+    // Processing queues
+    this.merkleProofQueue = new PQueue({
+      concurrency: this.config.merkleProofConcurrency,
+      interval: 200, // 200ms between batches to avoid overwhelming RPC
+      intervalCap: this.config.merkleProofConcurrency
+    });
+
+    this.retryQueue = new Map(); // Map of txid -> retry info
+    this.lastBlockProcessed = null;
 
     this.logger.info('Confirmation tracker initialized', {
       thresholds: this.config.confirmationThresholds,
-      autoArchiveAfter: this.config.autoArchiveAfter
+      autoArchiveAfter: this.config.autoArchiveAfter,
+      merkleProofConcurrency: this.config.merkleProofConcurrency,
+      pendingTxLimit: this.config.pendingTxLimit
     });
   }
 
@@ -38,13 +55,13 @@ class ConfirmationTracker {
   }
 
   /**
-   * Process a new block and update confirmations for all affected transactions
+   * Process a new block and update confirmations intelligently
    * @param {Object} blockData - Block information
    */
   async processNewBlock(blockData) {
     if (this.isProcessing) {
-      this.logger.debug('Already processing block confirmations, queuing', {
-        height: blockData.height
+      this.logger.debug('Already processing block confirmations, skipping', {
+        hash: blockData.hash
       });
       return;
     }
@@ -54,93 +71,146 @@ class ConfirmationTracker {
     try {
       const startTime = Date.now();
 
+      // Get current blockchain height
+      const currentHeight = await this.rpc.getBlockCount();
+
       this.logger.info('Processing confirmations for new block', {
-        height: blockData.height,
-        hash: blockData.hash
+        hash: blockData.hash,
+        currentHeight,
+        queueSize: this.merkleProofQueue.size,
+        retryQueueSize: this.retryQueue.size
       });
 
-      // Get all active transactions that need confirmation updates
-      const stats = await this.updateConfirmations(blockData.height);
+      // Process in parallel for efficiency
+      const [merkleStats, confirmationStats, archiveStats] = await Promise.all([
+        this.processUnconfirmedTransactions(),
+        this.updateConfirmationsSelectively(currentHeight),
+        this.checkAndArchiveTransactions(currentHeight)
+      ]);
 
-      // Check for transactions that need archival
-      const archivedStats = await this.checkAndArchiveTransactions(blockData.height);
+      // Process retry queue
+      await this.processRetryQueue();
 
       const duration = Date.now() - startTime;
 
       this.logger.info('Block confirmation processing completed', {
-        height: blockData.height,
-        ...stats,
-        ...archivedStats,
+        currentHeight,
+        ...merkleStats,
+        ...confirmationStats,
+        ...archiveStats,
+        queueSize: this.merkleProofQueue.size,
+        retryQueueSize: this.retryQueue.size,
         durationMs: duration
       });
 
+      this.lastBlockProcessed = currentHeight;
+
     } catch (error) {
       this.logger.error('Failed to process block confirmations', {
-        height: blockData.height,
+        hash: blockData.hash,
         error: error.message
       });
-      throw error;
     } finally {
       this.isProcessing = false;
     }
   }
 
   /**
-   * Update confirmation counts for all active transactions
+   * Process unconfirmed transactions with merkle proof verification
+   * @returns {Object} - Processing statistics
+   */
+  async processUnconfirmedTransactions() {
+    try {
+      // Get pending transactions that haven't been tried recently
+      const pendingTxs = await this.db.activeTransactions.find({
+        block_height: null,
+        status: 'pending'
+      }).limit(this.config.pendingTxLimit).toArray();
+
+      let verifiedCount = 0;
+      let failedCount = 0;
+
+      // Queue merkle proof verifications with rate limiting
+      const verificationPromises = pendingTxs.map(tx =>
+        this.merkleProofQueue.add(async () => {
+          try {
+            const verified = await this.verifyTransactionWithMerkleProof(tx._id);
+            if (verified) {verifiedCount++;}
+            return verified;
+          } catch (error) {
+            failedCount++;
+            this.addToRetryQueue(tx._id, error.message);
+            return false;
+          }
+        })
+      );
+
+      await Promise.allSettled(verificationPromises);
+
+      return {
+        pendingChecked: pendingTxs.length,
+        verifiedCount,
+        failedCount
+      };
+
+    } catch (error) {
+      this.logger.error('Failed to process unconfirmed transactions', { error: error.message });
+      return { pendingChecked: 0, verifiedCount: 0, failedCount: 0 };
+    }
+  }
+
+  /**
+   * Update confirmations only for transactions that might cross thresholds
    * @param {number} currentHeight - Current block height
    * @returns {Object} - Update statistics
    */
-  async updateConfirmations(currentHeight) {
+  async updateConfirmationsSelectively(currentHeight) {
     try {
       let totalUpdated = 0;
       let notificationsSent = 0;
-      let confirmedTransactions = 0;
 
-      // Process transactions in batches to avoid memory issues
+      // Only check transactions that might cross thresholds based on current height
+      const maxThreshold = Math.max(...this.config.confirmationThresholds);
+      const minBlockHeight = Math.max(1, currentHeight - maxThreshold);
+
       const cursor = this.db.activeTransactions.find({
-        block_height: { $ne: null, $lte: currentHeight },
-        status: { $in: ['pending', 'confirming'] }
+        block_height: { $gte: minBlockHeight, $lte: currentHeight },
+        status: 'confirming'
       }).sort({ block_height: 1 });
 
-      const _batch = [];
       const batchUpdates = [];
       const notificationQueue = [];
 
       for await (const tx of cursor) {
-        const confirmations = this.calculateConfirmations(tx.block_height, currentHeight);
+        const newConfirmations = this.calculateConfirmations(tx.block_height, currentHeight);
         const oldConfirmations = tx.confirmations || 0;
 
-        if (confirmations !== oldConfirmations) {
-          // Prepare batch update
-          batchUpdates.push({
-            updateOne: {
-              filter: { _id: tx._id },
-              update: {
-                $set: {
-                  confirmations,
-                  status: confirmations > 0 ? 'confirming' : 'pending',
-                  ...(confirmations > 0 && !tx.confirmed_at ? { confirmed_at: new Date() } : {})
-                }
+        // Only update if confirmations changed AND might trigger notifications
+        if (newConfirmations !== oldConfirmations) {
+          const triggers = this.getNotificationTriggers(oldConfirmations, newConfirmations);
+
+          if (triggers.length > 0) {
+            // Update transaction
+            batchUpdates.push({
+              updateOne: {
+                filter: { _id: tx._id },
+                update: { $set: { confirmations: newConfirmations } }
               }
-            }
-          });
-
-          // Check for notification thresholds
-          const notificationTriggers = this.getNotificationTriggers(oldConfirmations, confirmations);
-          for (const threshold of notificationTriggers) {
-            notificationQueue.push({
-              txid: tx._id,
-              threshold,
-              confirmations,
-              addresses: tx.addresses,
-              amount: tx.amount,
-              deposits: tx.deposits
             });
-          }
 
-          totalUpdated++;
-          if (confirmations > 0 && oldConfirmations === 0) {
-            confirmedTransactions++;
+            // Queue notifications
+            for (const threshold of triggers) {
+              notificationQueue.push({
+                txid: tx._id,
+                threshold,
+                confirmations: newConfirmations,
+                addresses: tx.addresses,
+                amount: tx.amount,
+                outputs: tx.outputs
+              });
+            }
+
+            totalUpdated++;
           }
         }
 
@@ -161,13 +231,12 @@ class ConfirmationTracker {
 
       return {
         totalUpdated,
-        confirmedTransactions,
         notificationsSent
       };
 
     } catch (error) {
-      this.logger.error('Failed to update confirmations', { error: error.message });
-      throw error;
+      this.logger.error('Failed to update confirmations selectively', { error: error.message });
+      return { totalUpdated: 0, notificationsSent: 0 };
     }
   }
 
@@ -308,7 +377,7 @@ class ConfirmationTracker {
         final_confirmations: this.calculateConfirmations(tx.block_height, currentHeight),
         confirmed_at: tx.confirmed_at,
         first_seen: tx.first_seen,
-        deposits: tx.deposits,
+        outputs: tx.outputs,
         archived_at: new Date(),
         archive_height: currentHeight
       }));
@@ -348,7 +417,7 @@ class ConfirmationTracker {
 
       // Calculate totals for each address
       for (const tx of archivedTransactions) {
-        for (const deposit of tx.deposits || []) {
+        for (const deposit of tx.outputs || []) {
           const current = addressUpdates.get(deposit.address) || { total: 0, count: 0 };
           addressUpdates.set(deposit.address, {
             total: current.total + deposit.amount,
@@ -441,6 +510,142 @@ class ConfirmationTracker {
   }
 
   /**
+   * Verify transaction using merkle proof and update block info with timeout and retry
+   * @param {string} txid - Transaction ID
+   * @returns {boolean} - Whether verification was successful
+   */
+  async verifyTransactionWithMerkleProof(txid) {
+    try {
+      // Use RPC timeout
+      const merkleProof = await this.rpc.makeRequest('getmerkleproof', [txid], this.config.rpcTimeout);
+
+      if (merkleProof && merkleProof.blockHash) {
+        // Get block header to get height with timeout
+        const blockHeader = await this.rpc.makeRequest('getblockheader', [merkleProof.blockHash, true], this.config.rpcTimeout);
+
+        const result = await this.db.activeTransactions.updateOne(
+          { _id: txid, block_height: null },
+          {
+            $set: {
+              block_height: blockHeader.height,
+              block_hash: merkleProof.blockHash,
+              confirmations: 1,
+              status: 'confirming',
+              confirmed_at: new Date(),
+              merkle_proof: merkleProof,
+              last_verified: new Date()
+            }
+          }
+        );
+
+        if (result.matchedCount > 0) {
+          this.logger.info('Transaction verified with merkle proof', {
+            txid,
+            blockHeight: blockHeader.height,
+            blockHash: merkleProof.blockHash
+          });
+
+          // Remove from retry queue if present
+          this.retryQueue.delete(txid);
+
+          // Trigger 0-confirmation notification
+          const tx = await this.db.activeTransactions.findOne({ _id: txid });
+          if (tx) {
+            await this.sendNotificationsAsync([{
+              txid,
+              threshold: 0,
+              confirmations: 1,
+              addresses: tx.addresses,
+              amount: tx.amount,
+              outputs: tx.outputs
+            }]);
+          }
+
+          return true;
+        }
+      }
+
+      return false;
+
+    } catch (error) {
+      // Don't log timeout errors as errors, they're expected
+      if (error.message.includes('timeout')) {
+        this.logger.debug('RPC timeout verifying transaction', { txid });
+      } else {
+        this.logger.debug('Transaction not yet confirmed or merkle proof unavailable', {
+          txid,
+          error: error.message
+        });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Add transaction to retry queue
+   * @param {string} txid - Transaction ID
+   * @param {string} errorMessage - Error message
+   */
+  addToRetryQueue(txid, errorMessage) {
+    const existing = this.retryQueue.get(txid);
+    const retryCount = existing ? existing.retryCount + 1 : 1;
+
+    if (retryCount <= this.config.maxRetries) {
+      this.retryQueue.set(txid, {
+        txid,
+        retryCount,
+        lastError: errorMessage,
+        nextRetryAt: Date.now() + this.config.retryDelayMs,
+        addedAt: existing ? existing.addedAt : Date.now()
+      });
+
+      this.logger.debug('Added transaction to retry queue', {
+        txid,
+        retryCount,
+        maxRetries: this.config.maxRetries
+      });
+    } else {
+      this.logger.warn('Transaction exceeded max retries', {
+        txid,
+        retryCount,
+        maxRetries: this.config.maxRetries,
+        lastError: errorMessage
+      });
+      this.retryQueue.delete(txid);
+    }
+  }
+
+  /**
+   * Process transactions in retry queue
+   */
+  async processRetryQueue() {
+    if (this.retryQueue.size === 0) {return;}
+
+    const now = Date.now();
+    const readyToRetry = Array.from(this.retryQueue.values())
+      .filter(item => item.nextRetryAt <= now)
+      .slice(0, 10); // Limit retries per block
+
+    if (readyToRetry.length === 0) {return;}
+
+    this.logger.debug('Processing retry queue', {
+      readyToRetry: readyToRetry.length,
+      totalInQueue: this.retryQueue.size
+    });
+
+    for (const item of readyToRetry) {
+      try {
+        const verified = await this.verifyTransactionWithMerkleProof(item.txid);
+        if (!verified) {
+          this.addToRetryQueue(item.txid, 'Still not confirmed');
+        }
+      } catch (error) {
+        this.addToRetryQueue(item.txid, error.message);
+      }
+    }
+  }
+
+  /**
    * Process a confirmed transaction (when included in a block)
    * @param {string} txid - Transaction ID
    * @param {number} blockHeight - Block height
@@ -477,7 +682,7 @@ class ConfirmationTracker {
             confirmations: 1,
             addresses: tx.addresses,
             amount: tx.amount,
-            deposits: tx.deposits
+            outputs: tx.outputs
           }]);
         }
       }
@@ -544,4 +749,4 @@ class ConfirmationTracker {
   }
 }
 
-module.exports = ConfirmationTracker;
+export default ConfirmationTracker;

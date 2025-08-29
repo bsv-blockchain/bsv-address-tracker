@@ -1,4 +1,4 @@
-const winston = require('winston');
+import winston from 'winston';
 
 class RPCClient {
   constructor() {
@@ -6,7 +6,7 @@ class RPCClient {
     this.port = process.env.SVNODE_RPC_PORT || 8332;
     this.user = process.env.SVNODE_RPC_USER;
     this.password = process.env.SVNODE_RPC_PASSWORD;
-    this.url = `http://${this.user}:${this.password}@${this.host}:${this.port}`;
+    this.url = `http://${this.host}:${this.port}`;
 
     this.logger = winston.createLogger({
       level: process.env.LOG_LEVEL || 'info',
@@ -18,7 +18,7 @@ class RPCClient {
     });
   }
 
-  async makeRequest(method, params = []) {
+  async makeRequest(method, params = [], timeout = 5000) {
     const request = {
       method: 'POST',
       headers: {
@@ -33,8 +33,16 @@ class RPCClient {
       })
     };
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
     try {
-      const response = await fetch(this.url, request);
+      const response = await fetch(this.url, {
+        ...request,
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -48,6 +56,12 @@ class RPCClient {
 
       return data.result;
     } catch (error) {
+      clearTimeout(timeoutId);
+
+      if (error.name === 'AbortError') {
+        throw new Error(`RPC request timeout after ${timeout}ms`);
+      }
+
       this.logger.error('RPC request failed', {
         method,
         params,
@@ -87,6 +101,11 @@ class RPCClient {
     const params = [txid, verbose];
     if (blockHash) {params.push(blockHash);}
     return this.makeRequest('getrawtransaction', params);
+  }
+
+  // Get merkle proof for transaction
+  getMerkleProof(txid) {
+    return this.makeRequest('getmerkleproof', [txid]);
   }
 
   // Test connection
@@ -137,4 +156,4 @@ class RPCClient {
   }
 }
 
-module.exports = RPCClient;
+export default RPCClient;

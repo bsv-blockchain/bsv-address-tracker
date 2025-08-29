@@ -1,5 +1,5 @@
-const bitcoin = require('bitcoinjs-lib');
-const winston = require('winston');
+import * as bitcoin from 'bitcoinjs-lib';
+import winston from 'winston';
 
 class BSVUtils {
   constructor() {
@@ -292,4 +292,4 @@ class BSVUtils {
   }
 }
 
-module.exports = BSVUtils;
+export default BSVUtils;

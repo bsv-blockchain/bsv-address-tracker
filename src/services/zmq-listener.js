@@ -1,10 +1,10 @@
-const zmq = require('zeromq');
-const winston = require('winston');
+import zmq from 'zeromq';
+import winston from 'winston';
 
 class ZMQListener {
-  constructor(blockTracker, depositDetector) {
-    this.blockTracker = blockTracker;
-    this.depositDetector = depositDetector;
+  constructor(confirmationTracker, transactionTracker) {
+    this.confirmationTracker = confirmationTracker;
+    this.transactionTracker = transactionTracker;
     this.rawTxSocket = null;
     this.hashBlockSocket = null;
     this.isRunning = false;
@@ -21,6 +21,7 @@ class ZMQListener {
     // Configuration
     this.rawTxEndpoint = process.env.SVNODE_ZMQ_RAWTX || 'tcp://127.0.0.1:28332';
     this.hashBlockEndpoint = process.env.SVNODE_ZMQ_HASHBLOCK || 'tcp://127.0.0.1:28333';
+    this.verboseLogging = process.env.ZMQ_VERBOSE_LOGGING === 'true';
   }
 
   async start() {
@@ -44,7 +45,8 @@ class ZMQListener {
 
       this.logger.info('Connected to ZMQ endpoints', {
         rawTx: this.rawTxEndpoint,
-        hashBlock: this.hashBlockEndpoint
+        hashBlock: this.hashBlockEndpoint,
+        verboseLogging: this.verboseLogging
       });
 
       this.isRunning = true;
@@ -53,7 +55,11 @@ class ZMQListener {
       this.listenForRawTransactions();
       this.listenForBlockHashes();
 
-      this.logger.info('ZMQ listener started successfully');
+      this.logger.info('ZMQ listener started successfully - waiting for messages...');
+
+      if (this.verboseLogging) {
+        this.logger.info('ZMQ: Subscribed to rawtx and hashblock topics');
+      }
 
     } catch (error) {
       this.logger.error('Failed to start ZMQ listener', { error: error.message });
@@ -110,20 +116,29 @@ class ZMQListener {
     try {
       const txHex = rawTxBuffer.toString('hex');
 
-      this.logger.debug('Received raw transaction', {
-        txHex: txHex.substring(0, 64) + '...',
-        size: rawTxBuffer.length
-      });
+      if (this.verboseLogging) {
+        this.logger.info('ZMQ: Received raw transaction', {
+          txHex: txHex.substring(0, 64) + '...',
+          size: rawTxBuffer.length,
+          fullHex: this.verboseLogging ? txHex : undefined
+        });
+      } else {
+        this.logger.debug('Received raw transaction', {
+          txHex: txHex.substring(0, 64) + '...',
+          size: rawTxBuffer.length
+        });
+      }
 
-      // Process transaction for deposits
-      if (this.depositDetector && this.depositDetector.isInitialized) {
-        const depositResult = await this.depositDetector.processTransaction(txHex);
+      // Process transaction to check if we're tracking any addresses
+      if (this.transactionTracker && this.transactionTracker.isInitialized) {
+        const txResult = await this.transactionTracker.processTransaction(txHex);
 
-        if (depositResult) {
-          this.logger.info('Transaction processed with deposits', {
-            txid: depositResult.txid,
-            deposits: depositResult.deposits,
-            totalAmount: depositResult.totalAmount
+        if (txResult) {
+          this.logger.info('Transaction tracked', {
+            txid: txResult.txid,
+            outputs: txResult.outputs,
+            totalAmount: txResult.totalAmount,
+            addresses: txResult.addresses
           });
         }
       }
@@ -137,11 +152,18 @@ class ZMQListener {
     try {
       const blockHash = blockHashBuffer.toString('hex');
 
-      this.logger.info('Received new block hash', { blockHash });
+      if (this.verboseLogging) {
+        this.logger.info('ZMQ: Received new block hash', {
+          blockHash,
+          size: blockHashBuffer.length
+        });
+      } else {
+        this.logger.info('Received new block hash', { blockHash });
+      }
 
-      // Pass to block tracker for processing
-      if (this.blockTracker) {
-        await this.blockTracker.processNewBlock(blockHash);
+      // Pass to confirmation tracker for processing
+      if (this.confirmationTracker) {
+        await this.confirmationTracker.processNewBlock({ hash: blockHash });
       }
 
     } catch (error) {
@@ -240,4 +262,4 @@ class ZMQListener {
   }
 }
 
-module.exports = ZMQListener;
+export default ZMQListener;
