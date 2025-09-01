@@ -45,12 +45,8 @@ Your `bitcoin.conf` must include these ZMQ settings:
 txindex=1
 
 # ZeroMQ configuration for real-time feeds
-zmqpubrawtx=tcp://127.0.0.1:28332
-zmqpubhashblock=tcp://127.0.0.1:28333
-
-# Alternative ZMQ format (use one or the other)
-# zmqpubrawtx2=tcp://127.0.0.1:28332
-# zmqpubhashblock2=tcp://127.0.0.1:28333
+zmqpubrawtx2=tcp://127.0.0.1:28332
+zmqpubhashblock2=tcp://127.0.0.1:28333
 
 # RPC configuration
 rpcallowip=127.0.0.1
