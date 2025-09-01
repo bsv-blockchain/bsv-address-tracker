@@ -1,6 +1,6 @@
 {
   "name": "bsv-address-tracker",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "Bitcoin SV address monitoring system for tracking deposits and confirmations",
   "main": "src/index.js",
   "type": "module",
