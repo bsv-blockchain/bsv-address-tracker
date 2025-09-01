@@ -17,14 +17,18 @@ class MongoDB {
 
   async connect() {
     try {
-      const url = process.env.MONGODB_URL || 'mongodb://localhost:27017';
-      const dbName = process.env.MONGODB_DB_NAME || 'bsv_tracker';
+      const url = process.env.MONGODB_URL || 'mongodb://localhost:27017/bsv_tracker';
 
       this.client = new MongoClient(url);
       await this.client.connect();
-      this.db = this.client.db(dbName);
 
-      this.logger.info('Connected to MongoDB', { url, dbName });
+      // Use the default database from the connection URL
+      this.db = this.client.db();
+
+      this.logger.info('Connected to MongoDB', { 
+        url: url.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'),
+        database: this.db.databaseName 
+      });
 
       // Create collections and indexes
       await this.setupCollections();

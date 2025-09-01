@@ -1,56 +1,97 @@
+# Production BSV Address Tracker
+# Docker Compose configuration for production deployment
+# 
+# IMPORTANT: Review and update all environment variables before deploying
+
 version: '3.8'
 
 services:
   mongodb:
     image: mongo:8
     container_name: bsv-tracker-mongodb
-    restart: unless-stopped
+    restart: always
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"  # Only expose to localhost
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: password
+      # CHANGE THESE CREDENTIALS IN PRODUCTION
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
       MONGO_INITDB_DATABASE: bsv_tracker
     volumes:
       - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
     networks:
       - bsv-tracker
+    command: mongod --quiet --logpath /dev/null
 
-  app:
-    build: .
+  bsv-address-tracker:
+    image: ghcr.io/bsv-blockchain/bsv-address-tracker:latest
     container_name: bsv-tracker-app
-    restart: unless-stopped
+    restart: always
     depends_on:
       - mongodb
     environment:
-      - NODE_ENV=development
-      - MONGODB_URL=mongodb://admin:password@mongodb:27017/bsv_tracker?authSource=admin
-      - MONGODB_DB_NAME=bsv_tracker
-      - LOG_LEVEL=debug
-      # SV Node connection - update these to point to your local node
-      - SVNODE_RPC_HOST=host.docker.internal
-      - SVNODE_RPC_PORT=8332
-      - SVNODE_RPC_USER=user
-      - SVNODE_RPC_PASSWORD=pass
-      - SVNODE_ZMQ_RAWTX=tcp://host.docker.internal:28332
-      - SVNODE_ZMQ_HASHBLOCK=tcp://host.docker.internal:28333
-      # Processing settings
-      - CONFIRMATION_THRESHOLDS=0,1,6,12,24,72,144,288
-      - AUTO_ARCHIVE_AFTER=288
+      # Database Configuration
+      MONGODB_URL: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-changeme}@mongodb:27017/bsv_tracker?authSource=admin
+
+      # SV Node Connection - REQUIRED
+      # Update these to match your Bitcoin SV node configuration
+      SVNODE_RPC_HOST: ${SVNODE_RPC_HOST:-host.docker.internal}
+      SVNODE_RPC_PORT: ${SVNODE_RPC_PORT:-8332}  # 8332 for mainnet, 18332 for testnet
+      SVNODE_RPC_USER: ${SVNODE_RPC_USER:-your_rpc_user}
+      SVNODE_RPC_PASSWORD: ${SVNODE_RPC_PASSWORD:-your_rpc_password}
+      
+      # ZeroMQ Configuration - REQUIRED
+      # These must match your bitcoin.conf zmq settings
+      SVNODE_ZMQ_RAWTX: ${SVNODE_ZMQ_RAWTX:-tcp://host.docker.internal:28332}
+      SVNODE_ZMQ_HASHBLOCK: ${SVNODE_ZMQ_HASHBLOCK:-tcp://host.docker.internal:28333}
+
+      # Network Configuration
+      BSV_NETWORK: ${BSV_NETWORK:-mainnet}  # mainnet or testnet
+
+      # API Server
+      API_PORT: 3000
+      API_HOST: 0.0.0.0
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}  # debug, info, warn, error
+      ZMQ_VERBOSE_LOGGING: ${ZMQ_VERBOSE_LOGGING:-false}
+      CONFIRMATION_TRACKER_VERBOSE_LOGGING: ${CONFIRMATION_TRACKER_VERBOSE_LOGGING:-false}
+      RPC_VERBOSE_LOGGING: ${RPC_VERBOSE_LOGGING:-false}
+
+      # Processing Configuration
+      AUTO_ARCHIVE_AFTER: ${AUTO_ARCHIVE_AFTER:-144}  # Archive after 144 confirmations (~1 day)
+
+      # WhatsOnChain Integration (Optional)
+      WOC_RATE_LIMIT_MS: ${WOC_RATE_LIMIT_MS:-1000}
+      MAX_HISTORY_PER_ADDRESS: ${MAX_HISTORY_PER_ADDRESS:-500}
+      WOC_VERBOSE_LOGGING: ${WOC_VERBOSE_LOGGING:-false}
+
     ports:
-      - "3000:3000"
-    volumes:
-      - ./src:/app/src:ro
-      - ./package.json:/app/package.json:ro
+      - "${API_PORT:-3000}:3000"
     networks:
       - bsv-tracker
-    # Only start if you want to run the app in docker
-    # For development, you'll likely run the app locally
-    profiles:
-      - full-stack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
 volumes:
   mongodb_data:
+    driver: local
+  mongodb_config:
     driver: local
 
 networks:

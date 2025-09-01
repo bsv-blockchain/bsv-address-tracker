@@ -203,7 +203,7 @@ class TransactionTracker {
         { _id: { $in: addresses } },
         {
           $set: { last_activity: timestamp },
-          $inc: { 
+          $inc: {
             transaction_count: 1, // Increment transaction count for each transaction
             total_received: 0 // Will be updated when confirmed
           }

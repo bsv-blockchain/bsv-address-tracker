@@ -111,7 +111,7 @@ class APIServer {
         // Add new addresses to the in-memory filter
         if (results.length > 0 && this.transactionTracker) {
           this.transactionTracker.addressFilter.addAddresses(results);
-          this.logger.info('Added addresses to in-memory filter', { 
+          this.logger.info('Added addresses to in-memory filter', {
             addresses: results,
             totalInFilter: this.transactionTracker.addressFilter.getStats().addressCount
           });

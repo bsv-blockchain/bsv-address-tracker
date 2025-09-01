@@ -104,7 +104,7 @@ class AddressFilter {
 
     try {
       const addresses = await db.collection('trackedAddresses').find(
-        { active: true }, 
+        { active: true },
         { projection: { _id: 1 } }
       ).toArray();
 

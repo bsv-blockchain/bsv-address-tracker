@@ -56,68 +56,59 @@ rpcpassword=your_rpc_password
 
 For detailed ZMQ configuration options, see the [Bitcoin SV Node ZMQ Documentation](https://bitcoinsv.io/2020/04/03/zmq-bitcoin-pubsub/).
 
-## Installation
+## Development Setup
 
-1. Clone the repository:
+For local development with MongoDB only:
+
 ```bash
+# Clone the repository:
 git clone https://github.com/yourusername/bsv-address-tracker.git
 cd bsv-address-tracker
-```
 
-2. Install dependencies:
-```bash
+# Start MongoDB for development
+docker-compose -f docker-compose.dev.yml up -d
+
+# Install dependencies
 npm install
-```
 
-3. Configure environment variables:
-```bash
+# Configure environment
 cp .env.example .env
 # Edit .env with your configuration
+
+# Start the application
+npm start  # or npm run dev for auto-restart
 ```
 
-## Configuration
+## Quick Start - Production Deployment
 
-Key environment variables in `.env`:
+### Docker Compose (Recommended)
 
-```env
-# SV Node Connection
-SVNODE_RPC_HOST=127.0.0.1
-SVNODE_RPC_PORT=18332  # Testnet port
-SVNODE_RPC_USER=your_rpc_user
-SVNODE_RPC_PASSWORD=your_rpc_password
-SVNODE_ZMQ_RAWTX=tcp://127.0.0.1:28332
-SVNODE_ZMQ_HASHBLOCK=tcp://127.0.0.1:28333
+Deploy the complete system with Docker Compose:
 
-# Database
-MONGODB_URL=mongodb://admin:password@127.0.0.1:27017/bsv_tracker?authSource=admin
-MONGODB_DB_NAME=bsv_tracker
-
-# API Server
-API_PORT=3000
-API_HOST=0.0.0.0
-
-# Processing Configuration
-AUTO_ARCHIVE_AFTER=144  # Archive after 144 confirmations (~1 day)
-
-# Network
-BSV_NETWORK=testnet  # or mainnet
-```
-
-## Starting the System
-
-1. Ensure MongoDB is running:
 ```bash
-docker-compose up -d  # If using the provided docker-compose.yml
+# Download the production docker-compose file
+curl -O https://raw.githubusercontent.com/bsv-blockchain/bsv-address-tracker/main/docker-compose.yml
+
+# Download the environment template
+curl -O https://raw.githubusercontent.com/bsv-blockchain/bsv-address-tracker/main/.env.production
+
+# Copy and edit the environment file
+cp .env.production .env
+nano .env  # Update with your SV node details and secure passwords
+
+# Start the system
+docker-compose up -d
+
+# Check logs
+docker-compose logs -f -n 100 bsv-address-tracker
+
+# Verify health
+curl http://localhost:3000/health
 ```
 
-2. Start the tracker:
-```bash
-npm start
-```
-
-The system will:
-- Connect to your SV Node via RPC
-- Subscribe to ZeroMQ feeds
+The system will automatically:
+- Set up MongoDB with persistent storage
+- Connect to your SV Node via RPC and ZeroMQ
 - Start the API server on port 3000
 - Begin monitoring for transactions
 
@@ -258,7 +249,30 @@ This is an educational demonstration focused on transaction lifecycle tracking. 
 
 This system shows **how to link transactions to addresses and track their confirmation journey**. Production systems would extend this foundation with business logic, amount tracking, balance calculations, and application-specific features.
 
-## Development
+## Deployment
+
+### Production with Docker
+
+The easiest way to deploy in production is using the pre-built Docker images:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/bsv-blockchain/bsv-address-tracker:latest
+
+# Run with environment variables
+docker run -d \
+  --name bsv-tracker \
+  -p 3000:3000 \
+  --env-file .env \
+  ghcr.io/bsv-blockchain/bsv-address-tracker:latest
+```
+
+Available image tags:
+- `latest` - Latest stable release from main branch
+- `main-<commit>` - Specific commit from main branch
+- `v1.0.0` - Specific version release
+
+### Development
 
 ```bash
 # Run in development mode with auto-restart
