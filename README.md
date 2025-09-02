@@ -96,6 +96,9 @@ curl -O https://raw.githubusercontent.com/bsv-blockchain/bsv-address-tracker/mai
 cp .env.production .env
 nano .env  # Update with your SV node details and secure passwords
 
+# Create data directories for MongoDB
+mkdir -p data/mongodb data/mongodb-config
+
 # Start the system
 docker compose up -d
 
