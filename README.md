@@ -11,7 +11,7 @@ A demonstration of how to monitor Bitcoin SV addresses and track transaction lif
 - **Transaction Lifecycle Tracking** - Tracks transactions from detection through final confirmation
 - **Transaction Verification** - Uses getrawtransaction for comprehensive confirmation details
 - **Scalable Architecture** - In-memory Set for O(1) address pre-screening with zero false positives
-- **Historical Data Integration** - Fetches transaction history from WhatsOnChain API
+- **Historical Data Integration** - Fetches transaction history from WhatsOnChain API (supports API keys for 40x faster fetching)
 - **Automatic Archival** - Archives fully confirmed transactions after 144+ confirmations
 - **Intelligent Retry Logic** - Handles failed operations with exponential backoff
 
@@ -74,6 +74,7 @@ npm install
 # Configure environment
 cp .env.example .env
 # Edit .env with your configuration
+# Optional: Add WOC_API_KEY for faster historical data (40+ req/sec vs 1 req/sec)
 
 # Start the application
 npm start  # or npm run dev for auto-restart
@@ -340,6 +341,11 @@ This system demonstrates a complete transaction tracking workflow:
 - **Comprehensive Updates**: Updates all tracked transactions efficiently on each new block
 - **Concurrent Processing**: Parallel processing of different confirmation tasks
 - **Rate Limiting**: Prevents overwhelming the SV Node with RPC requests
+- **WhatsOnChain API Key Support**: Optional API key increases historical data fetching from 1 req/sec to 40+ req/sec
+  - Without key: 1000ms delay between requests (default, free tier)
+  - With key: 25ms delay between requests (40x faster)
+  - Add `WOC_API_KEY=mainnet_xxxx` or `WOC_API_KEY=testnet_xxxx` to your .env file
+  - Get your API key from [whatsonchain.com](https://whatsonchain.com)
 
 ## Database Schema
 

@@ -16,9 +16,12 @@ class WhatsOnChainClient {
     const envNetwork = process.env.BSV_NETWORK || 'mainnet';
     this.network = this.mapNetworkName(envNetwork);
     this.baseUrl = this.getBaseUrl();
-    this.rateLimit = parseInt(process.env.WOC_RATE_LIMIT_MS) || 1000; // 1 request per second to be safe
 
-    // Rate limiting queue - max 1 concurrent request with 1 second intervals
+    // API key support - if provided, allows for higher rate limits
+    this.apiKey = process.env.WOC_API_KEY || null;
+    this.rateLimit = parseInt(process.env.WOC_RATE_LIMIT_MS) || 1000; // 1 req/sec by default
+
+    // Rate limiting queue - max 1 concurrent request with configured intervals
     this.queue = new PQueue({
       concurrency: 1,
       interval: this.rateLimit,
@@ -28,7 +31,9 @@ class WhatsOnChainClient {
     this.logger.info('WhatsOnChain client initialized', {
       network: this.network,
       baseUrl: this.baseUrl,
-      rateLimit: this.rateLimit
+      rateLimit: this.rateLimit,
+      hasApiKey: !!this.apiKey,
+      requestsPerSecond: Math.floor(1000 / this.rateLimit)
     });
   }
 
@@ -69,13 +74,21 @@ class WhatsOnChainClient {
           this.logger.info('WhatsOnChain request', { url });
         }
 
+        // Build headers with optional API key
+        const headers = {
+          'Accept': 'application/json',
+          'User-Agent': 'BSV-Address-Tracker/1.0',
+          ...options.headers
+        };
+
+        // Add Authorization header if API key is provided
+        if (this.apiKey) {
+          headers['Authorization'] = this.apiKey;
+        }
+
         const response = await fetch(url, {
           method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'BSV-Address-Tracker/1.0',
-            ...options.headers
-          },
+          headers,
           ...options
         });
 

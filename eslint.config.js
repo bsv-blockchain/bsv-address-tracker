@@ -32,14 +32,14 @@ export default [
     },
     rules: {
       // Code quality
-      'no-unused-vars': ['error', { 
+      'no-unused-vars': ['error', {
         argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_' 
+        varsIgnorePattern: '^_'
       }],
       'no-console': 'off', // Allow console in Node.js
       'no-debugger': 'error',
       'no-alert': 'error',
-      
+
       // Style consistency
       'indent': ['error', 2, { SwitchCase: 1 }],
       'quotes': ['error', 'single', { avoidEscape: true }],
@@ -52,7 +52,7 @@ export default [
       'space-infix-ops': 'error',
       'eol-last': 'error',
       'no-trailing-spaces': 'error',
-      
+
       // Best practices
       'eqeqeq': ['error', 'always'],
       'curly': ['error', 'all'],
@@ -66,7 +66,7 @@ export default [
       'no-useless-concat': 'error',
       'prefer-const': 'error',
       'no-var': 'error',
-      
+
       // Async/await
       'require-await': 'error',
       'no-return-await': 'error'

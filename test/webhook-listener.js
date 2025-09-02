@@ -11,7 +11,7 @@ const fastify = Fastify({
 fastify.addHook('preHandler', async (request, reply) => {
   const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${timestamp}] ${request.method} ${request.url}`);
-  
+
   if (Object.keys(request.headers).length > 0) {
     console.log('  Headers:');
     Object.entries(request.headers).forEach(([key, value]) => {
@@ -21,12 +21,12 @@ fastify.addHook('preHandler', async (request, reply) => {
       }
     });
   }
-  
+
   if (request.body && Object.keys(request.body).length > 0) {
     console.log('  Body:');
     console.log(JSON.stringify(request.body, null, 4).split('\n').map(line => `    ${line}`).join('\n'));
   }
-  
+
   console.log('  ---');
 });
 
@@ -34,15 +34,15 @@ fastify.addHook('preHandler', async (request, reply) => {
 fastify.all('/*', async (request, reply) => {
   // Add random delay to simulate real webhook processing
   const delay = Math.floor(Math.random() * 50);
-  
+
   if (delay > 0) {
     await new Promise(resolve => setTimeout(resolve, delay));
   }
-  
+
   // Return success responses most of the time
   const statuses = [200, 200, 200, 201, 202];
   const status = statuses[Math.floor(Math.random() * statuses.length)];
-  
+
   return reply.status(status).send({
     received: true,
     timestamp: new Date().toISOString(),
@@ -66,7 +66,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 const start = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    
+
     console.log('🎯 Fastify Webhook Listener');
     console.log('============================');
     console.log(`Listening on: http://localhost:${PORT}`);
