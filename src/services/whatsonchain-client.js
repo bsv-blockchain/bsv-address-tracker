@@ -132,38 +132,6 @@ class WhatsOnChainClient {
   }
 
   /**
-   * DEPRECATED: Get confirmed transaction history for multiple addresses (bulk endpoint)
-   * This method is deprecated in favor of individual address calls with pagination
-   * @deprecated Use getAddressConfirmedHistoryWithPagination instead
-   * @param {string[]} addresses - Array of addresses (max 20 according to docs)
-   * @returns {Object} - Address history mapping
-   */
-  async getBulkAddressHistory(addresses) {
-    this.logger.warn('getBulkAddressHistory is deprecated - use individual address calls instead');
-
-    if (!Array.isArray(addresses) || addresses.length === 0) {
-      return {};
-    }
-
-    // Convert to individual calls for compatibility
-    const historyMap = {};
-    for (const address of addresses) {
-      try {
-        const history = await this.getAddressConfirmedHistoryWithPagination(address, 100);
-        historyMap[address] = history;
-      } catch (error) {
-        this.logger.error('Failed to fetch individual address in deprecated bulk method', {
-          address,
-          error: error.message
-        });
-        historyMap[address] = [];
-      }
-    }
-
-    return historyMap;
-  }
-
-  /**
    * Get confirmed transaction history for a single address with pagination
    * @param {string} address - BSV address
    * @param {string} token - Next page token (optional)
@@ -226,102 +194,6 @@ class WhatsOnChainClient {
         address,
         from,
         to,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get all confirmed transaction history for an address (with automatic pagination)
-   * @param {string} address - BSV address
-   * @param {number} maxTransactions - Maximum transactions to fetch (default: 10000)
-   * @returns {Array} - Complete transaction history
-   */
-  async getAllAddressHistory(address, maxTransactions = 10000) {
-    const allTransactions = [];
-    let from = 0;
-    const batchSize = 1000; // Max allowed by API
-
-    try {
-      while (from < maxTransactions) {
-        const to = Math.min(from + batchSize - 1, maxTransactions - 1);
-
-        const batch = await this.getAddressHistory(address, from, to);
-
-        if (!batch || batch.length === 0) {
-          break; // No more transactions
-        }
-
-        allTransactions.push(...batch);
-
-        // If we got fewer transactions than requested, we've reached the end
-        if (batch.length < batchSize) {
-          break;
-        }
-
-        from = to + 1;
-
-        this.logger.debug('Fetched address history batch', {
-          address,
-          batchSize: batch.length,
-          totalFetched: allTransactions.length
-        });
-      }
-
-      this.logger.info('Completed address history fetch', {
-        address,
-        totalTransactions: allTransactions.length
-      });
-
-      return allTransactions;
-
-    } catch (error) {
-      this.logger.error('Failed to fetch complete address history', {
-        address,
-        partialResults: allTransactions.length,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get transaction details by transaction ID
-   * @param {string} txid - Transaction ID
-   * @returns {Object|null} - Transaction details
-   */
-  async getTransaction(txid) {
-    try {
-      const endpoint = `/tx/${txid}`;
-      const response = await this.makeRequest(endpoint);
-      return response;
-
-    } catch (error) {
-      this.logger.error('Failed to fetch transaction', {
-        txid,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-
-
-  /**
-   * Get address balance and transaction count
-   * @param {string} address - BSV address
-   * @returns {Object|null} - Address balance info
-   */
-  async getAddressInfo(address) {
-    try {
-      const endpoint = `/address/${address}/balance`;
-      const response = await this.makeRequest(endpoint);
-      return response;
-
-    } catch (error) {
-      this.logger.error('Failed to fetch address info', {
-        address,
         error: error.message
       });
       throw error;
@@ -409,8 +281,8 @@ class WhatsOnChainClient {
         });
 
         // Check if we have a next page token
-        if (response.next && allTransactions.length < maxTransactions) {
-          nextToken = response.next;
+        if (response.nextPageToken && allTransactions.length < maxTransactions) {
+          nextToken = response.nextPageToken;
         } else {
           // No more pages or reached max limit
           break;
