@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import winston from 'winston';
+import { URL } from 'url';
 
 class APIServer {
   constructor(mongodb, transactionTracker, confirmationTracker, addressHistoryFetcher) {
@@ -382,6 +383,60 @@ class APIServer {
       }
     });
 
+    // Get transaction by txid
+    this.fastify.get('/transaction/:txid', async (request, reply) => {
+      try {
+        const { txid } = request.params;
+
+        if (!txid || typeof txid !== 'string') {
+          return reply.code(400).send({
+            error: 'Invalid request',
+            message: 'Transaction ID is required'
+          });
+        }
+
+        // Search in active transactions first
+        let transaction = await this.db.activeTransactions.findOne({ _id: txid });
+        let isArchived = false;
+
+        // If not found in active, search in archived
+        if (!transaction) {
+          transaction = await this.db.archivedTransactions.findOne({ _id: txid });
+          isArchived = true;
+        }
+
+        if (!transaction) {
+          return reply.code(404).send({
+            error: 'Transaction not found',
+            txid
+          });
+        }
+
+        return {
+          transaction: {
+            txid: transaction._id,
+            addresses: transaction.addresses,
+            confirmations: transaction.confirmations,
+            status: transaction.status,
+            first_seen: transaction.first_seen,
+            block_height: transaction.block_height,
+            block_hash: transaction.block_hash,
+            block_time: transaction.block_time,
+            hex: transaction.hex,
+            archived: isArchived,
+            archived_at: transaction.archived_at || null
+          }
+        };
+
+      } catch (error) {
+        this.logger.error('Failed to get transaction', { txid: request.params.txid, error: error.message });
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: error.message
+        });
+      }
+    });
+
     // Get system statistics
     this.fastify.get('/stats', async (request, reply) => {
       try {
@@ -419,7 +474,7 @@ class APIServer {
     });
 
     // Webhook management endpoints
-    
+
     // Create a new webhook
     this.fastify.post('/webhooks', async (request, reply) => {
       try {
@@ -436,7 +491,7 @@ class APIServer {
         // Validate URL format
         try {
           new URL(url);
-        } catch (e) {
+        } catch {
           return reply.code(400).send({
             error: 'Invalid request',
             message: 'Invalid URL format'
@@ -446,7 +501,7 @@ class APIServer {
         // Handle addresses - empty array or null means monitor all
         let webhookAddresses = [];
         let monitorAll = false;
-        
+
         if (!addresses || (Array.isArray(addresses) && addresses.length === 0)) {
           monitorAll = true;
         } else if (Array.isArray(addresses)) {
@@ -547,7 +602,7 @@ class APIServer {
     this.fastify.get('/webhooks/:id', async (request, reply) => {
       try {
         const { id } = request.params;
-        
+
         // Validate ObjectId format
         if (!id.match(/^[0-9a-fA-F]{24}$/)) {
           return reply.code(400).send({
@@ -619,7 +674,7 @@ class APIServer {
           try {
             new URL(url);
             updateFields.url = url;
-          } catch (e) {
+          } catch {
             return reply.code(400).send({
               error: 'Invalid URL format'
             });

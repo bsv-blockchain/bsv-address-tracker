@@ -309,7 +309,7 @@ class TransactionTracker {
     try {
       // Get the transaction record
       const transaction = await this.db.activeTransactions.findOne({ _id: txid });
-      
+
       if (!transaction || !transaction.addresses || transaction.addresses.length === 0) {
         return;
       }
@@ -340,8 +340,8 @@ class TransactionTracker {
       // Queue webhooks
       for (const webhook of webhooks) {
         // For wildcard webhooks, include all addresses. For specific webhooks, filter to monitored ones
-        const relevantAddresses = webhook.monitor_all 
-          ? transaction.addresses 
+        const relevantAddresses = webhook.monitor_all
+          ? transaction.addresses
           : transaction.addresses.filter(addr => webhook.addresses.includes(addr));
 
         await this.webhookProcessor.queueWebhook({

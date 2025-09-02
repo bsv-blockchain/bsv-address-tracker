@@ -657,8 +657,8 @@ class ConfirmationTracker {
       // Queue webhooks
       for (const webhook of webhooks) {
         // For wildcard webhooks, include all addresses. For specific webhooks, filter to monitored ones
-        const relevantAddresses = webhook.monitor_all 
-          ? transaction.addresses 
+        const relevantAddresses = webhook.monitor_all
+          ? transaction.addresses
           : transaction.addresses.filter(addr => webhook.addresses.includes(addr));
 
         await this.webhookProcessor.queueWebhook({
