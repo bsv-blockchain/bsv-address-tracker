@@ -365,31 +365,53 @@ class ConfirmationTracker {
           this.logger.debug('Using block info from transaction', { blockHash, blockHeight });
         }
 
-        // Always update all fields since reorgs can happen
-        const updateFields = {
-          block_hash: blockHash,
-          block_height: blockHeight,
-          confirmations: txData.confirmations || 0,
-          block_time: txData.blocktime ? new Date(txData.blocktime * 1000) : null,
-          hex: txData.hex,
-          last_verified: new Date(),
-          status: txData.confirmations > 0 ? 'confirming' : 'pending'
-        };
+        // Get current transaction data for comparison
+        const currentTx = await this.db.activeTransactions.findOne({ _id: txid });
+        if (!currentTx) {
+          this.logger.warn('Transaction not found for verification', { txid });
+          return false;
+        }
+
+        // Build update fields by comparing with current values
+        const updateFields = {};
+        const newBlockTime = txData.blocktime ? new Date(txData.blocktime * 1000) : null;
+        const newConfirmations = txData.confirmations || 0;
+        const newStatus = newConfirmations > 0 ? 'confirming' : 'pending';
+
+        // Only update fields that have actually changed
+        if (currentTx.block_hash !== blockHash) {updateFields.block_hash = blockHash;}
+        if (currentTx.block_height !== blockHeight) {updateFields.block_height = blockHeight;}
+        if (currentTx.confirmations !== newConfirmations) {updateFields.confirmations = newConfirmations;}
+        if (currentTx.status !== newStatus) {updateFields.status = newStatus;}
+        if (currentTx.hex !== txData.hex) {updateFields.hex = txData.hex;}
+
+        // Handle block_time comparison (both could be null or Date objects)
+        const currentBlockTime = currentTx.block_time?.getTime();
+        const newBlockTimeMs = newBlockTime?.getTime();
+        if (currentBlockTime !== newBlockTimeMs) {updateFields.block_time = newBlockTime;}
+
+        // Always update last_verified
+        updateFields.last_verified = new Date();
 
         if (enableVerboseLogging) {
           this.logger.debug('Updating transaction with confirmation data', {
             txid,
+            changedFields: Object.keys(updateFields),
             updateFields: {
               ...updateFields,
-              hex: undefined // Don't log the full hex, too verbose
+              hex: updateFields.hex ? '[updated]' : undefined // Don't log the full hex
             }
           });
         }
 
-        const result = await this.db.activeTransactions.updateOne(
-          { _id: txid },
-          { $set: updateFields }
-        );
+        // Only perform update if there are changes
+        let result = { matchedCount: 1, modifiedCount: 0 };
+        if (Object.keys(updateFields).length > 1) { // More than just last_verified
+          result = await this.db.activeTransactions.updateOne(
+            { _id: txid },
+            { $set: updateFields }
+          );
+        }
 
         if (result.matchedCount > 0) {
           if (enableVerboseLogging) {
@@ -400,9 +422,12 @@ class ConfirmationTracker {
             });
           }
 
-          // Trigger webhook for transaction update
-          if (this.webhookProcessor && result.modifiedCount > 0) {
-            await this.triggerTransactionWebhook(txid, updateFields);
+          // Trigger webhook for meaningful changes (exclude last_verified only updates)
+          const meaningfulFields = { ...updateFields };
+          delete meaningfulFields.last_verified;
+
+          if (this.webhookProcessor && Object.keys(meaningfulFields).length > 0) {
+            await this.triggerTransactionWebhook(txid, meaningfulFields);
           }
 
           this.logger.info('Transaction verified', {
