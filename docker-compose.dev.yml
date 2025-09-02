@@ -1,8 +1,6 @@
 # Development MongoDB instance
 # For local development only - not for production use
 
-version: '3.8'
-
 services:
   mongodb:
     image: mongo:8

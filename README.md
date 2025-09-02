@@ -97,10 +97,10 @@ cp .env.production .env
 nano .env  # Update with your SV node details and secure passwords
 
 # Start the system
-docker-compose up -d
+docker compose up -d
 
 # Check logs
-docker-compose logs -f -n 100 bsv-address-tracker
+docker compose logs -f -n 100 bsv-address-tracker
 
 # Verify health
 curl http://localhost:3000/health

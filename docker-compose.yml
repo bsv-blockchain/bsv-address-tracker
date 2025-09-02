@@ -1,9 +1,7 @@
 # Production BSV Address Tracker
 # Docker Compose configuration for production deployment
-# 
+#
 # IMPORTANT: Review and update all environment variables before deploying
-
-version: '3.8'
 
 services:
   mongodb:
@@ -30,6 +28,8 @@ services:
     restart: always
     depends_on:
       - mongodb
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Database Configuration
       MONGODB_URL: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-changeme}@mongodb:27017/bsv_tracker?authSource=admin
@@ -40,7 +40,7 @@ services:
       SVNODE_RPC_PORT: ${SVNODE_RPC_PORT:-8332}  # 8332 for mainnet, 18332 for testnet
       SVNODE_RPC_USER: ${SVNODE_RPC_USER:-your_rpc_user}
       SVNODE_RPC_PASSWORD: ${SVNODE_RPC_PASSWORD:-your_rpc_password}
-      
+
       # ZeroMQ Configuration - REQUIRED
       # These must match your bitcoin.conf zmq settings
       SVNODE_ZMQ_RAWTX: ${SVNODE_ZMQ_RAWTX:-tcp://host.docker.internal:28332}
