@@ -61,6 +61,7 @@ services:
       AUTO_ARCHIVE_AFTER: ${AUTO_ARCHIVE_AFTER:-144}  # Archive after 144 confirmations (~1 day)
 
       # WhatsOnChain Integration (Optional)
+      WOC_API_KEY: ${WOC_API_KEY}
       WOC_RATE_LIMIT_MS: ${WOC_RATE_LIMIT_MS:-1000}
       MAX_HISTORY_PER_ADDRESS: ${MAX_HISTORY_PER_ADDRESS:-500}
       WOC_VERBOSE_LOGGING: ${WOC_VERBOSE_LOGGING:-false}
