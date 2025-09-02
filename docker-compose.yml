@@ -67,6 +67,10 @@ services:
       MAX_HISTORY_PER_ADDRESS: ${MAX_HISTORY_PER_ADDRESS:-500}
       WOC_VERBOSE_LOGGING: ${WOC_VERBOSE_LOGGING:-false}
 
+      # API Authentication (Optional)
+      REQUIRE_API_KEY: ${REQUIRE_API_KEY:-false}
+      API_KEY: ${API_KEY}
+
     ports:
       - "${API_PORT:-3000}:3000"
     networks:

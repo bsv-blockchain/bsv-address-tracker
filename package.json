@@ -12,8 +12,7 @@
     "test:integration": "node --experimental-vm-modules node_modules/.bin/jest --testMatch='**/tests/integration/**/*.test.js'",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "setup": "node scripts/setup.js",
-    "import-addresses": "node scripts/import-addresses.js"
+    "webhook-listener": "node test/webhook-listener.js"
   },
   "keywords": [
     "bitcoin",
@@ -33,6 +32,7 @@
     "dotenv": "^17.2.1",
     "fastify": "^5.5.0",
     "mongodb": "^6.0.0",
+    "node-fetch": "^3.3.2",
     "p-queue": "^8.1.0",
     "winston": "^3.11.0",
     "zeromq": "^6.5.0"

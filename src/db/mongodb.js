@@ -25,9 +25,9 @@ class MongoDB {
       // Use the default database from the connection URL
       this.db = this.client.db();
 
-      this.logger.info('Connected to MongoDB', { 
+      this.logger.info('Connected to MongoDB', {
         url: url.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'),
-        database: this.db.databaseName 
+        database: this.db.databaseName
       });
 
       // Create collections and indexes
@@ -46,7 +46,9 @@ class MongoDB {
     const collections = [
       'trackedAddresses',    // Addresses being monitored
       'activeTransactions',  // Transactions with < 288 confirmations
-      'archivedTransactions' // Fully confirmed transactions
+      'archivedTransactions', // Fully confirmed transactions
+      'webhooks',           // Webhook configurations
+      'webhookQueue'        // Outgoing webhook requests queue
     ];
 
     for (const collectionName of collections) {
@@ -100,6 +102,25 @@ class MongoDB {
         { key: { block_height: 1 }, name: 'block_height_1' }
       ]);
 
+      // webhooks indexes
+      await this.db.collection('webhooks').createIndexes([
+        { key: { addresses: 1 }, name: 'addresses_1' },
+        { key: { active: 1 }, name: 'active_1' },
+        { key: { created_at: 1 }, name: 'created_at_1' },
+        { key: { addresses: 1, active: 1 }, name: 'addresses_active_1' }
+      ]);
+
+      // webhookQueue indexes
+      await this.db.collection('webhookQueue').createIndexes([
+        { key: { status: 1 }, name: 'status_1' },
+        { key: { next_retry: 1 }, name: 'next_retry_1' },
+        { key: { created_at: 1 }, name: 'created_at_1' },
+        { key: { webhook_id: 1 }, name: 'webhook_id_1' },
+        { key: { transaction_id: 1 }, name: 'transaction_id_1' },
+        { key: { status: 1, next_retry: 1 }, name: 'status_next_retry_1' },
+        { key: { webhook_id: 1, transaction_id: 1, status: 1 }, name: 'webhook_tx_status_1' }
+      ]);
+
       this.logger.info('Created database indexes successfully');
     } catch (error) {
       // Ignore "index already exists" errors
@@ -123,6 +144,14 @@ class MongoDB {
 
   get archivedTransactions() {
     return this.db.collection('archivedTransactions');
+  }
+
+  get webhooks() {
+    return this.db.collection('webhooks');
+  }
+
+  get webhookQueue() {
+    return this.db.collection('webhookQueue');
   }
 
   async disconnect() {

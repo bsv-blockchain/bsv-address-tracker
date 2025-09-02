@@ -114,16 +114,44 @@ The system will automatically:
 
 ## API Usage
 
+### Authentication
+
+API authentication is optional but recommended for production deployments. When enabled, all API requests (except `/health`) require an API key.
+
+**Enable authentication:**
+```bash
+# In your .env file
+REQUIRE_API_KEY=true
+API_KEY=your-secure-api-key-here
+```
+
+**Provide API key in requests:**
+- **Header method (recommended):** `X-API-Key: your-api-key-here`
+- **Query parameter:** `?api_key=your-api-key-here`
+
+**Authentication disabled:**
+When `REQUIRE_API_KEY=false` (default), no authentication is required and all examples work without API keys.
+
 ### Adding Addresses to Monitor
 
 ```bash
 # Add single or multiple addresses
 curl -X POST http://localhost:3000/addresses \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key-here" \
   -d '{
     "addresses": [
       "mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR",
       "mgqipciCS56nCYSjB1vTcDGskN82yxfo1G"
+    ]
+  }'
+
+# Or with query parameter
+curl -X POST "http://localhost:3000/addresses?api_key=your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "addresses": [
+      "mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR"
     ]
   }'
 ```
@@ -148,47 +176,137 @@ Response:
 
 ```bash
 # Get all addresses
-curl http://localhost:3000/addresses
+curl -H "X-API-Key: your-api-key-here" http://localhost:3000/addresses
 
 # Get only active addresses
-curl "http://localhost:3000/addresses?active=true"
+curl -H "X-API-Key: your-api-key-here" "http://localhost:3000/addresses?active=true"
 
-# With pagination
-curl "http://localhost:3000/addresses?limit=50&offset=0"
+# With pagination and API key as query parameter
+curl "http://localhost:3000/addresses?limit=50&offset=0&api_key=your-api-key-here"
 ```
 
 ### Getting Address Details
 
 ```bash
 # Get specific address info including recent transactions
-curl http://localhost:3000/addresses/mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR
+curl -H "X-API-Key: your-api-key-here" \
+  http://localhost:3000/addresses/mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR
 ```
 
 ### Viewing Transactions
 
 ```bash
 # Get all transactions
-curl http://localhost:3000/transactions
+curl -H "X-API-Key: your-api-key-here" http://localhost:3000/transactions
 
 # Filter by status (pending, confirming)
-curl "http://localhost:3000/transactions?status=pending"
+curl -H "X-API-Key: your-api-key-here" "http://localhost:3000/transactions?status=pending"
 
 # With pagination
-curl "http://localhost:3000/transactions?limit=50&offset=0"
+curl -H "X-API-Key: your-api-key-here" "http://localhost:3000/transactions?limit=50&offset=0"
 ```
 
 ### System Statistics
 
 ```bash
 # Get system stats
-curl http://localhost:3000/stats
+curl -H "X-API-Key: your-api-key-here" http://localhost:3000/stats
 ```
 
 ### Removing an Address
 
 ```bash
 # Deactivate address from monitoring
-curl -X DELETE http://localhost:3000/addresses/mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR
+curl -X DELETE \
+  -H "X-API-Key: your-api-key-here" \
+  http://localhost:3000/addresses/mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR
+```
+
+### Webhook Management
+
+#### Register a Webhook for Specific Addresses
+
+```bash
+# Monitor specific addresses
+curl -X POST http://localhost:3000/webhooks \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://localhost:4000/webhook",
+    "addresses": ["mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR", "mgqipciCS56nCYSjB1vTcDGskN82yxfo1G"]
+  }'
+```
+
+#### Register a Wildcard Webhook (All Addresses)
+
+```bash
+# Monitor ALL addresses
+curl -X POST http://localhost:3000/webhooks \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://localhost:4000/webhook",
+    "addresses": []
+  }'
+```
+
+#### List Webhooks
+
+```bash
+# Get all webhooks
+curl -H "X-API-Key: your-api-key-here" http://localhost:3000/webhooks
+
+# Get only active webhooks
+curl -H "X-API-Key: your-api-key-here" "http://localhost:3000/webhooks?active=true"
+```
+
+#### Update a Webhook
+
+```bash
+# Update webhook URL
+curl -X PUT http://localhost:3000/webhooks/WEBHOOK_ID \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://localhost:5000/new-webhook"
+  }'
+```
+
+#### Delete a Webhook
+
+```bash
+# Remove webhook
+curl -X DELETE \
+  -H "X-API-Key: your-api-key-here" \
+  http://localhost:3000/webhooks/WEBHOOK_ID
+```
+
+### Webhook Notifications
+
+Webhooks are triggered for all transaction lifecycle changes:
+- New transaction detected
+- Transaction confirmation count updated
+- Transaction fully confirmed and archived
+
+### Webhook Payload Example
+
+```json
+{
+  "timestamp": "2023-08-29T12:34:56.789Z",
+  "transaction": {
+    "_id": "abcd1234...",
+    "addresses": ["mnai8LzKea5e3C9qgrBo7JHgpiEnHKMhwR"],
+    "confirmations": 6,
+    "status": "confirming",
+    "block_height": 123456,
+    "block_hash": "0000000000000abc...",
+    "first_seen": "2023-08-29T12:30:00.000Z"
+  },
+  "changes": {
+    "confirmations": 6,
+    "block_height": 123456
+  }
+}
 ```
 
 ## Transaction Lifecycle Demo

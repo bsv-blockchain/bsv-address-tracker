@@ -40,7 +40,8 @@ class AddressExtractor {
       const inputAddresses = this.extractInputAddresses(tx, network);
       const outputAddresses = this.extractOutputAddresses(tx, network);
 
-      const allAddresses = [...inputAddresses, ...outputAddresses];
+      // Deduplicate addresses - same address can appear in both inputs and outputs
+      const allAddresses = [...new Set([...inputAddresses, ...outputAddresses])];
 
       this.logger.debug('Address extraction successful', {
         txid: tx.id('hex'),
@@ -100,7 +101,8 @@ class AddressExtractor {
       }
     }
 
-    return addresses;
+    // Deduplicate input addresses in case same address used multiple times
+    return [...new Set(addresses)];
   }
 
   /**
@@ -139,7 +141,8 @@ class AddressExtractor {
       }
     }
 
-    return addresses;
+    // Deduplicate output addresses in case same address appears multiple times
+    return [...new Set(addresses)];
   }
 
   /**

@@ -8,6 +8,7 @@ import ZMQListener from './services/zmq-listener.js';
 import TransactionTracker from './services/transaction-tracker.js';
 import ConfirmationTracker from './services/confirmation-tracker.js';
 import AddressHistoryFetcher from './services/address-history-fetcher.js';
+import WebhookProcessor from './services/webhook-processor.js';
 import APIServer from './api/server.js';
 
 class BSVAddressTracker {
@@ -27,6 +28,7 @@ class BSVAddressTracker {
     this.transactionTracker = null;
     this.confirmationTracker = null;
     this.addressHistoryFetcher = null;
+    this.webhookProcessor = null;
     this.apiServer = null;
     this.isRunning = false;
   }
@@ -53,12 +55,22 @@ class BSVAddressTracker {
       // Initialize address history fetcher
       this.addressHistoryFetcher = new AddressHistoryFetcher(this.db, this.rpc);
 
-      // Initialize transaction tracker with history fetcher
-      this.transactionTracker = new TransactionTracker(this.db, this.addressHistoryFetcher);
+      // Initialize webhook processor first if enabled
+      if (process.env.ENABLE_WEBHOOKS === 'true') {
+        this.webhookProcessor = new WebhookProcessor(this.db);
+        this.webhookProcessor.start();
+      }
+
+      // Initialize transaction tracker with history fetcher and webhook processor
+      this.transactionTracker = new TransactionTracker(this.db, this.addressHistoryFetcher, this.webhookProcessor);
       await this.transactionTracker.initialize();
 
-      // Initialize confirmation tracker
-      this.confirmationTracker = new ConfirmationTracker(this.db, this.rpc);
+      // Initialize confirmation tracker (pass webhook processor if enabled)
+      this.confirmationTracker = new ConfirmationTracker(
+        this.db,
+        this.rpc,
+        this.webhookProcessor
+      );
 
       // Initialize ZMQ listener
       this.zmqListener = new ZMQListener(this.confirmationTracker, this.transactionTracker);
@@ -253,6 +265,11 @@ class BSVAddressTracker {
       // Stop ZMQ listener
       if (this.zmqListener) {
         await this.zmqListener.stop();
+      }
+
+      // Stop webhook processor
+      if (this.webhookProcessor) {
+        await this.webhookProcessor.stop();
       }
 
       // Disconnect from database

@@ -2,9 +2,10 @@ import winston from 'winston';
 import PQueue from 'p-queue';
 
 class ConfirmationTracker {
-  constructor(mongodb, rpcClient) {
+  constructor(mongodb, rpcClient, webhookProcessor = null) {
     this.db = mongodb;
     this.rpc = rpcClient;
+    this.webhookProcessor = webhookProcessor;
     this.isProcessing = false;
 
     this.logger = winston.createLogger({
@@ -249,6 +250,17 @@ class ConfirmationTracker {
       const txids = transactionsToArchive.map(tx => tx._id);
       await this.db.activeTransactions.deleteMany({ _id: { $in: txids } });
 
+      // Trigger webhooks for archived transactions
+      if (this.webhookProcessor) {
+        for (const tx of transactionsToArchive) {
+          await this.triggerTransactionWebhook(tx._id, {
+            confirmations: tx.confirmations,
+            block_height: tx.block_height,
+            archived_at: new Date()
+          });
+        }
+      }
+
       // Update address statistics
       await this.updateAddressStatistics(transactionsToArchive);
 
@@ -387,6 +399,12 @@ class ConfirmationTracker {
               modifiedCount: result.modifiedCount
             });
           }
+
+          // Trigger webhook for transaction update
+          if (this.webhookProcessor && result.modifiedCount > 0) {
+            await this.triggerTransactionWebhook(txid, updateFields);
+          }
+
           this.logger.info('Transaction verified', {
             txid,
             blockHeight: blockHeight,
@@ -595,6 +613,78 @@ class ConfirmationTracker {
     } catch (error) {
       this.logger.error('Failed to get confirmation tracker stats', { error: error.message });
       return { error: error.message };
+    }
+  }
+
+  /**
+   * Trigger webhook for transaction changes
+   * @param {string} txid - Transaction ID
+   * @param {Object} changes - What changed in the transaction
+   */
+  async triggerTransactionWebhook(txid, changes) {
+    try {
+      // Get the full transaction with addresses
+      const transaction = await this.db.activeTransactions.findOne({ _id: txid }) ||
+                          await this.db.archivedTransactions.findOne({ _id: txid });
+
+      if (!transaction || !transaction.addresses || transaction.addresses.length === 0) {
+        return;
+      }
+
+      // Find webhooks for these addresses (including wildcard webhooks)
+      const webhooks = await this.db.webhooks.find({
+        $and: [
+          { active: true },
+          {
+            $or: [
+              { monitor_all: true }, // Wildcard webhooks
+              { addresses: { $in: transaction.addresses } } // Specific address webhooks
+            ]
+          }
+        ]
+      }).toArray();
+
+      if (webhooks.length === 0) {
+        return;
+      }
+
+      this.logger.info('Triggering webhooks for transaction', {
+        txid,
+        webhookCount: webhooks.length,
+        addresses: transaction.addresses
+      });
+
+      // Queue webhooks
+      for (const webhook of webhooks) {
+        // For wildcard webhooks, include all addresses. For specific webhooks, filter to monitored ones
+        const relevantAddresses = webhook.monitor_all 
+          ? transaction.addresses 
+          : transaction.addresses.filter(addr => webhook.addresses.includes(addr));
+
+        await this.webhookProcessor.queueWebhook({
+          webhookId: webhook._id,
+          url: webhook.url,
+          payload: {
+            timestamp: new Date(),
+            transaction: {
+              _id: transaction._id,
+              addresses: relevantAddresses,
+              confirmations: transaction.confirmations,
+              status: transaction.status,
+              block_height: transaction.block_height,
+              block_hash: transaction.block_hash,
+              first_seen: transaction.first_seen,
+              raw_hex: transaction.raw_hex
+            },
+            changes: changes
+          }
+        });
+      }
+    } catch (error) {
+      this.logger.error('Failed to trigger webhook', {
+        txid,
+        error: error.message
+      });
     }
   }
 }

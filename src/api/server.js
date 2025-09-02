@@ -22,7 +22,59 @@ class APIServer {
       trustProxy: true
     });
 
+    this.setupAuthentication();
     this.setupRoutes();
+  }
+
+  setupAuthentication() {
+    // API Key authentication middleware
+    const apiKey = process.env.API_KEY;
+    const requireAuth = process.env.REQUIRE_API_KEY === 'true';
+
+    if (requireAuth && !apiKey) {
+      this.logger.error('REQUIRE_API_KEY is true but API_KEY is not set');
+      throw new Error('API_KEY environment variable is required when REQUIRE_API_KEY=true');
+    }
+
+    if (requireAuth) {
+      this.fastify.addHook('onRequest', (request, reply, done) => {
+        // Skip authentication for health check
+        if (request.url === '/health') {
+          done();
+          return;
+        }
+
+        const providedKey = request.headers['x-api-key'] || request.query.api_key;
+
+        if (!providedKey) {
+          reply.code(401).send({
+            error: 'Unauthorized',
+            message: 'API key required. Provide via X-API-Key header or api_key query parameter'
+          });
+          return;
+        }
+
+        if (providedKey !== apiKey) {
+          reply.code(401).send({
+            error: 'Unauthorized',
+            message: 'Invalid API key'
+          });
+          return;
+        }
+
+        // Log API usage
+        this.logger.info('API request authenticated', {
+          method: request.method,
+          url: request.url,
+          ip: request.ip
+        });
+        done();
+      });
+
+      this.logger.info('API key authentication enabled');
+    } else {
+      this.logger.info('API key authentication disabled');
+    }
   }
 
   setupRoutes() {
@@ -359,6 +411,305 @@ class APIServer {
 
       } catch (error) {
         this.logger.error('Failed to get stats', { error: error.message });
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: error.message
+        });
+      }
+    });
+
+    // Webhook management endpoints
+    
+    // Create a new webhook
+    this.fastify.post('/webhooks', async (request, reply) => {
+      try {
+        const { url, addresses, active = true } = request.body;
+
+        // Validate required fields
+        if (!url || typeof url !== 'string') {
+          return reply.code(400).send({
+            error: 'Invalid request',
+            message: 'URL is required and must be a string'
+          });
+        }
+
+        // Validate URL format
+        try {
+          new URL(url);
+        } catch (e) {
+          return reply.code(400).send({
+            error: 'Invalid request',
+            message: 'Invalid URL format'
+          });
+        }
+
+        // Handle addresses - empty array or null means monitor all
+        let webhookAddresses = [];
+        let monitorAll = false;
+        
+        if (!addresses || (Array.isArray(addresses) && addresses.length === 0)) {
+          monitorAll = true;
+        } else if (Array.isArray(addresses)) {
+          webhookAddresses = addresses;
+        } else {
+          return reply.code(400).send({
+            error: 'Invalid request',
+            message: 'Addresses must be an array or null/empty for all addresses'
+          });
+        }
+
+        // Create webhook document
+        const webhook = {
+          url,
+          addresses: webhookAddresses,
+          monitor_all: monitorAll,
+          active,
+          created_at: new Date(),
+          last_triggered: null,
+          trigger_count: 0
+        };
+
+        const result = await this.db.webhooks.insertOne(webhook);
+
+        this.logger.info('Webhook created', {
+          webhookId: result.insertedId,
+          url,
+          monitorAll,
+          addressCount: webhookAddresses.length
+        });
+
+        return {
+          success: true,
+          webhook: {
+            id: result.insertedId,
+            url,
+            addresses: webhookAddresses,
+            monitor_all: monitorAll,
+            active
+          }
+        };
+
+      } catch (error) {
+        this.logger.error('Failed to create webhook', { error: error.message });
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: error.message
+        });
+      }
+    });
+
+    // List webhooks
+    this.fastify.get('/webhooks', async (request, reply) => {
+      try {
+        const { active, limit = 100, offset = 0 } = request.query;
+
+        const filter = {};
+        if (active !== undefined) {
+          filter.active = active === 'true';
+        }
+
+        const webhooks = await this.db.webhooks
+          .find(filter)
+          .limit(parseInt(limit))
+          .skip(parseInt(offset))
+          .toArray();
+
+        const total = await this.db.webhooks.countDocuments(filter);
+
+        return {
+          webhooks: webhooks.map(w => ({
+            id: w._id,
+            url: w.url,
+            addresses: w.addresses,
+            monitor_all: w.monitor_all || false,
+            active: w.active,
+            created_at: w.created_at,
+            last_triggered: w.last_triggered,
+            trigger_count: w.trigger_count
+          })),
+          pagination: {
+            limit: parseInt(limit),
+            offset: parseInt(offset),
+            total
+          }
+        };
+
+      } catch (error) {
+        this.logger.error('Failed to list webhooks', { error: error.message });
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: error.message
+        });
+      }
+    });
+
+    // Get webhook details
+    this.fastify.get('/webhooks/:id', async (request, reply) => {
+      try {
+        const { id } = request.params;
+        
+        // Validate ObjectId format
+        if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+          return reply.code(400).send({
+            error: 'Invalid webhook ID format'
+          });
+        }
+
+        const { ObjectId } = await import('mongodb');
+        const webhook = await this.db.webhooks.findOne({ _id: new ObjectId(id) });
+
+        if (!webhook) {
+          return reply.code(404).send({
+            error: 'Webhook not found'
+          });
+        }
+
+        // Get recent webhook queue items for this webhook
+        const recentDeliveries = await this.db.webhookQueue
+          .find({ webhook_id: new ObjectId(id) })
+          .sort({ created_at: -1 })
+          .limit(10)
+          .toArray();
+
+        return {
+          webhook: {
+            id: webhook._id,
+            url: webhook.url,
+            addresses: webhook.addresses,
+            monitor_all: webhook.monitor_all || false,
+            active: webhook.active,
+            created_at: webhook.created_at,
+            last_triggered: webhook.last_triggered,
+            trigger_count: webhook.trigger_count
+          },
+          recent_deliveries: recentDeliveries.map(d => ({
+            id: d._id,
+            status: d.status,
+            event: d.event,
+            created_at: d.created_at,
+            attempts: d.attempts,
+            last_error: d.last_error
+          }))
+        };
+
+      } catch (error) {
+        this.logger.error('Failed to get webhook details', { error: error.message });
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: error.message
+        });
+      }
+    });
+
+    // Update webhook
+    this.fastify.put('/webhooks/:id', async (request, reply) => {
+      try {
+        const { id } = request.params;
+        const { url, addresses, active, monitor_all } = request.body;
+
+        if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+          return reply.code(400).send({
+            error: 'Invalid webhook ID format'
+          });
+        }
+
+        const updateFields = {};
+
+        if (url !== undefined) {
+          try {
+            new URL(url);
+            updateFields.url = url;
+          } catch (e) {
+            return reply.code(400).send({
+              error: 'Invalid URL format'
+            });
+          }
+        }
+
+        if (active !== undefined) {
+          updateFields.active = active;
+        }
+
+        if (monitor_all !== undefined) {
+          updateFields.monitor_all = monitor_all;
+          if (monitor_all) {
+            updateFields.addresses = [];
+          }
+        }
+
+        if (addresses !== undefined && !monitor_all) {
+          updateFields.addresses = Array.isArray(addresses) ? addresses : [];
+        }
+
+        if (Object.keys(updateFields).length === 0) {
+          return reply.code(400).send({
+            error: 'No valid update fields provided'
+          });
+        }
+
+        const { ObjectId } = await import('mongodb');
+        const result = await this.db.webhooks.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateFields }
+        );
+
+        if (result.matchedCount === 0) {
+          return reply.code(404).send({
+            error: 'Webhook not found'
+          });
+        }
+
+        this.logger.info('Webhook updated', { webhookId: id, updates: updateFields });
+
+        return {
+          success: true,
+          updated: result.modifiedCount > 0
+        };
+
+      } catch (error) {
+        this.logger.error('Failed to update webhook', { error: error.message });
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: error.message
+        });
+      }
+    });
+
+    // Delete webhook
+    this.fastify.delete('/webhooks/:id', async (request, reply) => {
+      try {
+        const { id } = request.params;
+
+        if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+          return reply.code(400).send({
+            error: 'Invalid webhook ID format'
+          });
+        }
+
+        const { ObjectId } = await import('mongodb');
+        const result = await this.db.webhooks.deleteOne({ _id: new ObjectId(id) });
+
+        if (result.deletedCount === 0) {
+          return reply.code(404).send({
+            error: 'Webhook not found'
+          });
+        }
+
+        // Also clean up any pending webhook queue items
+        await this.db.webhookQueue.deleteMany({
+          webhook_id: new ObjectId(id),
+          status: { $in: ['pending', 'retry'] }
+        });
+
+        this.logger.info('Webhook deleted', { webhookId: id });
+
+        return {
+          success: true,
+          message: 'Webhook deleted successfully'
+        };
+
+      } catch (error) {
+        this.logger.error('Failed to delete webhook', { error: error.message });
         return reply.code(500).send({
           error: 'Internal server error',
           message: error.message

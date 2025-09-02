@@ -3,9 +3,10 @@ import AddressFilter from '../lib/address-filter.js';
 import AddressExtractor from '../lib/address-extractor.js';
 
 class TransactionTracker {
-  constructor(mongodb, addressHistoryFetcher = null) {
+  constructor(mongodb, addressHistoryFetcher = null, webhookProcessor = null) {
     this.db = mongodb;
     this.addressHistoryFetcher = addressHistoryFetcher;
+    this.webhookProcessor = webhookProcessor;
     this.addressFilter = null;
     this.addressExtractor = new AddressExtractor();
     this.isInitialized = false;
@@ -176,6 +177,14 @@ class TransactionTracker {
       // Update address last activity
       await this.updateAddressActivity(trackedAddressData.map(a => a.address), now);
 
+      // Trigger webhook for new transaction
+      if (this.webhookProcessor) {
+        await this.triggerTransactionWebhook(parsedTx.txid, {
+          status: 'new',
+          first_seen: now
+        });
+      }
+
       return {
         txid: parsedTx.txid,
         addressCount: trackedAddressData.length,
@@ -284,6 +293,80 @@ class TransactionTracker {
     } catch (error) {
       this.logger.error('Failed to add addresses', { error: error.message });
       throw error;
+    }
+  }
+
+  /**
+   * Trigger webhook for transaction changes
+   * @param {string} txid - Transaction ID
+   * @param {Object} changes - What changed in the transaction
+   */
+  async triggerTransactionWebhook(txid, changes) {
+    if (!this.webhookProcessor) {
+      return;
+    }
+
+    try {
+      // Get the transaction record
+      const transaction = await this.db.activeTransactions.findOne({ _id: txid });
+      
+      if (!transaction || !transaction.addresses || transaction.addresses.length === 0) {
+        return;
+      }
+
+      // Find webhooks for these addresses (including wildcard webhooks)
+      const webhooks = await this.db.webhooks.find({
+        $and: [
+          { active: true },
+          {
+            $or: [
+              { monitor_all: true }, // Wildcard webhooks
+              { addresses: { $in: transaction.addresses } } // Specific address webhooks
+            ]
+          }
+        ]
+      }).toArray();
+
+      if (webhooks.length === 0) {
+        return;
+      }
+
+      this.logger.info('Triggering webhooks for new transaction', {
+        txid,
+        webhookCount: webhooks.length,
+        addresses: transaction.addresses
+      });
+
+      // Queue webhooks
+      for (const webhook of webhooks) {
+        // For wildcard webhooks, include all addresses. For specific webhooks, filter to monitored ones
+        const relevantAddresses = webhook.monitor_all 
+          ? transaction.addresses 
+          : transaction.addresses.filter(addr => webhook.addresses.includes(addr));
+
+        await this.webhookProcessor.queueWebhook({
+          webhookId: webhook._id,
+          url: webhook.url,
+          payload: {
+            timestamp: new Date(),
+            transaction: {
+              _id: transaction._id,
+              addresses: relevantAddresses,
+              confirmations: transaction.confirmations,
+              status: transaction.status,
+              block_height: transaction.block_height,
+              block_hash: transaction.block_hash,
+              first_seen: transaction.first_seen
+            },
+            changes: changes
+          }
+        });
+      }
+    } catch (error) {
+      this.logger.error('Failed to trigger webhook', {
+        txid,
+        error: error.message
+      });
     }
   }
 
