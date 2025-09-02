@@ -9,7 +9,7 @@ services:
     container_name: bsv-tracker-mongodb
     restart: always
     ports:
-      - "127.0.0.1:27017:27017"  # Only expose to localhost
+      - "127.0.0.1:27017:27017"
     environment:
       # CHANGE THESE CREDENTIALS IN PRODUCTION
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
@@ -19,8 +19,6 @@ services:
       # Local bind mounts for easier backups and data management
       - ./data/mongodb:/data/db
       - ./data/mongodb-config:/data/configdb
-    networks:
-      - bsv-tracker
     command: mongod --quiet --logpath /dev/null
 
   bsv-address-tracker:
@@ -88,6 +86,3 @@ services:
           cpus: '0.5'
           memory: 512M
 
-networks:
-  bsv-tracker:
-    driver: bridge
