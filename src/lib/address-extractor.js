@@ -1,4 +1,4 @@
-import { Transaction, PublicKey, Hash, Utils } from '@bsv/sdk';
+import { Transaction, PublicKey, Utils } from '@bsv/sdk';
 import winston from 'winston';
 
 class AddressExtractor {
@@ -83,7 +83,7 @@ class AddressExtractor {
 
           // For P2PKH unlock: <signature> <pubkey>
           if (chunks.length === 2) {
-            const pubkeyDER = chunks[1].data; 
+            const pubkeyDER = chunks[1].data;
             if (pubkeyDER && pubkeyDER.length === 33) {
               const address = PublicKey.fromDER(pubkeyDER).toAddress(network);
               addresses.add(address);
