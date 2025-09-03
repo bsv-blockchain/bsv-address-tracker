@@ -1,4 +1,4 @@
-import { Transaction, PublicKey, Hash, Utils } from '@bsv/sdk';
+import { Transaction, PublicKey, Utils } from '@bsv/sdk';
 import winston from 'winston';
 
 class AddressExtractor {
@@ -37,11 +37,10 @@ class AddressExtractor {
 
       const tx = Transaction.fromHex(txHex);
 
-      const inputAddresses = this.extractInputAddresses(tx, network);
-      const outputAddresses = this.extractOutputAddresses(tx, network);
-
-      // Deduplicate addresses - same address can appear in both inputs and outputs
-      const allAddresses = [...new Set([...inputAddresses, ...outputAddresses])];
+      const all = new Set();
+      const inputAddresses = this.extractInputAddresses(tx, network, all);
+      const outputAddresses = this.extractOutputAddresses(tx, network, all);
+      const allAddresses = [...all];
 
       this.logger.debug('Address extraction successful', {
         txid: tx.id('hex'),
@@ -68,11 +67,12 @@ class AddressExtractor {
   /**
    * Extract addresses from transaction inputs
    * @param {Transaction} tx - Parsed transaction
-   * @param {string} network - Network type
+   * @param {string} network - Network type (testnet or mainnet)
+   * @param {Set<string>} allAddresses - Set to store all addresses
    * @returns {string[]} - Array of input addresses
    */
-  extractInputAddresses(tx, network) {
-    const addresses = [];
+  extractInputAddresses(tx, network, allAddresses) {
+    const addresses = new Set();
 
     for (let i = 0; i < tx.inputs.length; i++) {
       const input = tx.inputs[i];
@@ -83,13 +83,11 @@ class AddressExtractor {
 
           // For P2PKH unlock: <signature> <pubkey>
           if (chunks.length === 2) {
-            const pubkeyChunk = chunks[1];
-
-            if (pubkeyChunk.data && pubkeyChunk.data.length === 33) {
-              const pubkeyBuffer = Buffer.from(pubkeyChunk.data);
-              const pubkey = PublicKey.fromString(pubkeyBuffer.toString('hex'));
-              const address = pubkey.toAddress(network);
-              addresses.push(address);
+            const pubkeyDER = chunks[1].data;
+            if (pubkeyDER && pubkeyDER.length === 33) {
+              const address = PublicKey.fromDER(pubkeyDER).toAddress(network);
+              addresses.add(address);
+              allAddresses.add(address);
             }
           }
         } catch (e) {
@@ -101,18 +99,19 @@ class AddressExtractor {
       }
     }
 
-    // Deduplicate input addresses in case same address used multiple times
-    return [...new Set(addresses)];
+    return [...addresses];
   }
 
   /**
    * Extract addresses from transaction outputs
    * @param {Transaction} tx - Parsed transaction
-   * @param {string} network - Network type
+   * @param {string} network - Network type (testnet or mainnet)
+   * @param {Set<string>} allAddresses - Set to store all addresses
    * @returns {string[]} - Array of output addresses
    */
-  extractOutputAddresses(tx, network) {
-    const addresses = [];
+  extractOutputAddresses(tx, network, allAddresses) {
+    const addresses = new Set();
+    const prefix = network === 'testnet' ? [0x6f] : [0x00];
 
     for (let i = 0; i < tx.outputs.length; i++) {
       const output = tx.outputs[i];
@@ -129,8 +128,9 @@ class AddressExtractor {
               chunks[3].op === 136 && // OP_EQUALVERIFY (0x88)
               chunks[4].op === 172) { // OP_CHECKSIG (0xac)
 
-            const address = this.createAddressFromHash160(chunks[2].data, network);
-            addresses.push(address);
+            const address = Utils.toBase58Check(chunks[2].data, prefix);
+            addresses.add(address);
+            allAddresses.add(address);
           }
         } catch (e) {
           this.logger.warn('Output address extraction failed', {
@@ -141,33 +141,7 @@ class AddressExtractor {
       }
     }
 
-    // Deduplicate output addresses in case same address appears multiple times
-    return [...new Set(addresses)];
-  }
-
-  /**
-   * Create address from hash160 using manual base58 encoding
-   * @param {Uint8Array|Buffer} hash160Data - 20-byte hash160
-   * @param {string} network - Network type
-   * @returns {string} - Base58 encoded address
-   */
-  createAddressFromHash160(hash160Data, network) {
-    const hash160 = Buffer.from(hash160Data);
-
-    // Version byte: 0x00 for mainnet, 0x6f for testnet
-    const versionByte = Buffer.from([network === 'mainnet' ? 0x00 : 0x6f]);
-
-    // Create payload: version + hash160
-    const payload = Buffer.concat([versionByte, hash160]);
-
-    // Calculate checksum: first 4 bytes of double SHA256
-    const checksum = Hash.sha256(Hash.sha256(payload)).slice(0, 4);
-
-    // Create final address buffer: payload + checksum
-    const addressBuffer = Buffer.concat([payload, Buffer.from(checksum)]);
-
-    // Encode to base58
-    return Utils.toBase58(addressBuffer);
+    return [...addresses];
   }
 }
 
