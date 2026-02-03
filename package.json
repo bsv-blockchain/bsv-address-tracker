@@ -30,7 +30,7 @@
   "dependencies": {
     "@bsv/sdk": "^1.6.24",
     "dotenv": "^17.2.1",
-    "fastify": "^5.5.0",
+    "fastify": "^5.7.3",
     "mongodb": "^6.0.0",
     "node-fetch": "^3.3.2",
     "p-queue": "^8.1.0",
