@@ -28,7 +28,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@bsv/sdk": "^1.6.24",
+    "@bsv/sdk": "^2.5.0",
     "dotenv": "^17.2.1",
     "fastify": "^5.5.0",
     "mongodb": "^6.0.0",
